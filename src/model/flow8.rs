@@ -7,7 +7,8 @@ use iced::Theme;
 use midir::{MidiInputConnection, MidiOutputConnection};
 
 use super::channels::{
-    AudioConnection, Bus, BusType, Channel, ChannelType, FxSlot, PhantomPower, PhantomPowerType,
+    AudioConnection, Bus, BusType, Channel, ChannelId, ChannelType, FxSlot, PhantomPower,
+    PhantomPowerType,
 };
 use super::page::Page;
 use crate::service::ble::{BleConnection, BleStatus};
@@ -15,6 +16,14 @@ use crate::service::ble::{BleConnection, BleStatus};
 use crate::service::sysex_calibration::CalibrationState;
 
 pub const SNAPSHOT_COUNT: usize = 15;
+
+/// What the inline rename editor is editing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RenameTarget {
+    Channel(ChannelId),
+    Snapshot(usize),
+    SnapshotSave(usize),
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SyncInterval {
@@ -90,6 +99,9 @@ pub struct FLOW8Controller {
     pub snapshot_names_receiver: Option<mpsc::Receiver<Vec<Option<String>>>>,
     pub fx_muted: bool,
     pub snapshot_resync_at: Option<Instant>,
+    pub monitor_tab: usize,
+    pub rename_target: Option<RenameTarget>,
+    pub rename_buffer: String,
     #[cfg(any(debug_assertions, feature = "dev-tools"))]
     pub calibration: CalibrationState,
 }
@@ -187,6 +199,9 @@ impl FLOW8Controller {
             snapshot_names_receiver: None,
             fx_muted: false,
             snapshot_resync_at: None,
+            monitor_tab: 0,
+            rename_target: None,
+            rename_buffer: String::new(),
             #[cfg(any(debug_assertions, feature = "dev-tools"))]
             calibration: CalibrationState::new(),
         }

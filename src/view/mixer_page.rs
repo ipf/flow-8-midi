@@ -1,6 +1,6 @@
 use crate::model::{
     channels::{Bus, BusType, Channel, PhantomPowerType},
-    flow8::FLOW8Controller,
+    flow8::{FLOW8Controller, RenameTarget},
     message::InterfaceMessage,
 };
 use crate::view::widgets::{
@@ -9,7 +9,7 @@ use crate::view::widgets::{
 };
 use iced::{
     widget::{
-        button, column, container, row, text, tooltip, tooltip::Position,
+        button, column, container, row, text, text_input, tooltip, tooltip::Position,
         Column, Space,
     },
     Center, Element, Fill, Length,
@@ -22,7 +22,7 @@ pub fn view_mixer(controller: &FLOW8Controller) -> Element<'_, InterfaceMessage>
     let channels_row: Vec<Element<InterfaceMessage>> = controller
         .channels
         .iter()
-        .map(|c| build_channel_strip(c))
+        .map(|c| build_channel_strip(c, controller))
         .collect();
 
     let channels_section = container(
@@ -57,25 +57,54 @@ const NAME_SLOT_HEIGHT: f32 = 16.0;
 const PHANTOM_SLOT_HEIGHT: f32 = 30.0;
 const H_SLIDER_SLOT_HEIGHT: f32 = 38.0;
 
-fn build_channel_strip(channel: &Channel) -> Element<'_, InterfaceMessage> {
+fn build_channel_strip<'a>(
+    channel: &'a Channel,
+    controller: &'a FLOW8Controller,
+) -> Element<'a, InterfaceMessage> {
     let mut col = Column::new()
         .width(Fill)
         .align_x(Center)
         .spacing(6)
         .padding([10, 6]);
 
-    col = col.push(text(channel.display_label()).size(13));
-
-    let name_content: Element<'_, InterfaceMessage> = if !channel.name.is_empty() {
-        text(&channel.name).size(11).into()
+    let renaming = controller.rename_target == Some(RenameTarget::Channel(channel.id));
+    if renaming {
+        // inline rename editor (Enter = submit, ✕ = cancel)
+        col = col.push(
+            column![
+                text_input("name", &controller.rename_buffer)
+                    .on_input(InterfaceMessage::RenameChanged)
+                    .on_submit(InterfaceMessage::RenameSubmit)
+                    .size(12)
+                    .width(Fill),
+                button(text("\u{2715}").size(10))
+                    .on_press(InterfaceMessage::RenameCancel)
+                    .padding([2, 6])
+                    .style(button::secondary),
+            ]
+            .align_x(Center)
+            .spacing(4),
+        );
     } else {
-        Space::new().into()
-    };
-    col = col.push(
-        container(name_content)
+        col = col.push(text(channel.display_label()).size(13));
+
+        // name (or ✎ when empty) doubles as the rename button
+        let name_label = if channel.name.is_empty() {
+            "\u{270E}".to_string()
+        } else {
+            channel.name.clone()
+        };
+        col = col.push(
+            container(
+                button(text(name_label).size(11))
+                    .on_press(InterfaceMessage::RenameStartChannel(channel.id))
+                    .padding([1, 4])
+                    .style(button::text),
+            )
             .height(Length::Fixed(NAME_SLOT_HEIGHT))
             .align_y(Center),
-    );
+        );
+    }
 
     col = add_mute_solo(col, channel);
 
@@ -100,6 +129,7 @@ fn build_channel_strip(channel: &Channel) -> Element<'_, InterfaceMessage> {
             v_slider(1..=127, strip.level, FADER_HEIGHT, move |v| {
                 InterfaceMessage::Level(ch_id, v)
             }, format_level(strip.level)),
+            text(format_level(strip.level)).size(10),
         ]
         .align_x(Center)
         .spacing(4),
@@ -288,6 +318,7 @@ fn build_bus_strip(bus: &Bus) -> Element<'_, InterfaceMessage> {
             v_slider(1..=127, bus.bus_strip.level, BUS_FADER_HEIGHT, move |v| {
                 InterfaceMessage::BusLevel(bus_idx, bus_id, v)
             }, format_level(bus.bus_strip.level)),
+            text(format_level(bus.bus_strip.level)).size(10),
         ]
         .align_x(Center)
         .spacing(4),

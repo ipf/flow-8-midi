@@ -464,17 +464,102 @@ pub fn send_dump_trigger(conn: &BleConnection) -> Result<(), String> {
 
     rt.block_on(async {
         log!("[BLE] Sending dump trigger (0x4B)...");
-        conn.peripheral
-            .write(
-                &conn.characteristic,
-                &DUMP_TRIGGER_PACKET,
-                WriteType::WithResponse,
-            )
-            .await
-            .map_err(|e| format!("Dump trigger write failed: {}", e))?;
+        // the device never completes the D-Bus WriteValue call for this packet,
+        // but delivers it on air (~250 ms) — cap the wait, the dump arrives via USB
+        let write = conn.peripheral.write(
+            &conn.characteristic,
+            &DUMP_TRIGGER_PACKET,
+            WriteType::WithoutResponse,
+        );
+        match tokio::time::timeout(Duration::from_millis(1500), write).await {
+            Ok(Ok(_)) => {}
+            Ok(Err(e)) => return Err(format!("Dump trigger write failed: {}", e)),
+            Err(_) => log!("[BLE] Dump trigger sent (no ack from device)"),
+        }
 
         log!("[BLE] Dump trigger sent. SysEx should arrive via USB MIDI.");
         Ok(())
+    })
+}
+
+// ── BLE write commands (opcodes from the official FLOW Mix app protocol) ──
+// Wire format: [opcode][payload...] in a single GATT write. Channel rename (0x05)
+// verified working on-device 2026-11-03; snapshot save/rename derived from the native
+// cmd descriptor table — if the device ignores one, try a variant (icon bytes, length prefix).
+
+const CMD_CHANNEL_LABEL: u8 = 0x05; // [uid][icon u16][name]
+const CMD_SNAPSHOT_SAVE: u8 = 0x19; // [slot][name]
+const CMD_SNAPSHOT_RENAME: u8 = 0x32; // [slot][name]
+const CHANNEL_NAME_MAX: usize = 8; // panel labels are 8 chars
+
+pub fn send_ble_command(conn: &BleConnection, opcode: u8, payload: &[u8]) -> Result<(), String> {
+    let rt = tokio::runtime::Runtime::new().map_err(|e| format!("Tokio runtime error: {}", e))?;
+    rt.block_on(async {
+        let mut packet = Vec::with_capacity(payload.len() + 1);
+        packet.push(opcode);
+        packet.extend_from_slice(payload);
+        let write = conn.peripheral.write(
+            &conn.characteristic,
+            &packet,
+            // device answers via notifications/USB, not with a write response
+            WriteType::WithoutResponse,
+        );
+        // device never completes the D-Bus WriteValue call; cap the ack wait —
+        // the packet itself is delivered (verify via panel/dump)
+        match tokio::time::timeout(Duration::from_millis(1500), write).await {
+            Ok(Ok(_)) => Ok(()),
+            Ok(Err(e)) => Err(format!("BLE command 0x{:02X} failed: {}", opcode, e)),
+            Err(_) => Ok(()),
+        }
+    })
+}
+
+/// Rename a channel: ChannelLabel (op 0x05), [uid][icon u16 = 0][ascii name].
+/// uid = channel id (0..=6, same order as the state dump).
+pub fn send_channel_rename(conn: &BleConnection, uid: u8, name: &str) -> Result<(), String> {
+    let mut name_buf: Vec<u8> = name
+        .chars()
+        .take(CHANNEL_NAME_MAX)
+        .map(|c| c as u8)
+        .collect();
+    name_buf.truncate(CHANNEL_NAME_MAX);
+    let mut payload = vec![uid, 0x00, 0x00];
+    payload.append(&mut name_buf);
+    send_ble_command(conn, CMD_CHANNEL_LABEL, &payload)
+}
+
+/// Rename a snapshot on the device: SnapshotRename (op 0x32), [slot][name].
+pub fn send_snapshot_rename(conn: &BleConnection, slot: u8, name: &str) -> Result<(), String> {
+    let mut payload = vec![slot];
+    payload.extend_from_slice(name.as_bytes());
+    send_ble_command(conn, CMD_SNAPSHOT_RENAME, &payload)
+}
+
+/// Save the current mixer state into a device snapshot slot: SnapshotSave (op 0x19), [slot][name].
+pub fn send_snapshot_save(conn: &BleConnection, slot: u8, name: &str) -> Result<(), String> {
+    let mut payload = vec![slot];
+    payload.extend_from_slice(name.as_bytes());
+    send_ble_command(conn, CMD_SNAPSHOT_SAVE, &payload)
+}
+
+/// Re-fetch the snapshot list from the device. Reuses the connect-time fetch flow
+/// (subscribe retries → GetSnapshotList 0x07 → wait 0x27 response → parse → unsubscribe).
+pub fn refresh_snapshot_names(conn: &BleConnection) -> Vec<Option<String>> {
+    let rt = match tokio::runtime::Runtime::new() {
+        Ok(rt) => rt,
+        Err(e) => {
+            log_error!("[BLE] Could not create runtime for snapshot refresh: {}", e);
+            return Vec::new();
+        }
+    };
+    rt.block_on(async {
+        match fetch_snapshot_names(&conn.peripheral, &conn.characteristic).await {
+            Ok(names) => names,
+            Err(e) => {
+                log_warn!("[BLE] Snapshot refresh failed: {}", e);
+                Vec::new()
+            }
+        }
     })
 }
 

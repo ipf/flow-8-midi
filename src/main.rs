@@ -19,7 +19,7 @@ use service::midi::{
 };
 use service::midi_mapper::match_midi_command;
 use service::sysex_parser;
-use model::{flow8::FLOW8Controller, message::InterfaceMessage, page::Page};
+use model::{flow8::FLOW8Controller, flow8::RenameTarget, message::InterfaceMessage, page::Page};
 
 use iced::{
     widget::{column, scrollable},
@@ -234,10 +234,22 @@ fn update(controller: &mut FLOW8Controller, message: InterfaceMessage) {
 
 fn try_ble_dump_trigger(controller: &FLOW8Controller) -> Option<Result<(), String>> {
     let conn_arc = controller.ble_connection.clone();
-    conn_arc
-        .lock()
-        .ok()
-        .and_then(|guard| guard.as_ref().map(ble::send_dump_trigger))
+    // never block the UI thread: BlueZ write calls can stall up to 30 s
+    let has_conn = conn_arc.lock().ok().map(|g| g.is_some()).unwrap_or(false);
+    if !has_conn {
+        return None;
+    }
+    std::thread::spawn(move || {
+        let Ok(guard) = conn_arc.lock() else {
+            return;
+        };
+        if let Some(conn) = guard.as_ref() {
+            if let Err(e) = ble::send_dump_trigger(conn) {
+                log_error!("[BLE] Dump trigger failed: {}", e);
+            }
+        }
+    });
+    Some(Ok(()))
 }
 
 fn view(controller: &FLOW8Controller) -> Element<'_, InterfaceMessage> {
@@ -416,6 +428,9 @@ fn update_interface(controller: &mut FLOW8Controller, message: InterfaceMessage)
                 eq.bands_synced[band_index as usize] = true;
             }
         }
+        InterfaceMessage::MonitorTab(tab) => {
+            controller.monitor_tab = tab;
+        }
 
         InterfaceMessage::FxPreset(fx_id, value) => {
             let f = &mut controller.fx_slots[fx_id as usize];
@@ -563,6 +578,95 @@ fn update_interface(controller: &mut FLOW8Controller, message: InterfaceMessage)
             log!("[APP] Loading snapshot {}", n + 1);
             controller.mark_all_unsynced();
             controller.snapshot_resync_at = Some(std::time::Instant::now());
+        }
+        InterfaceMessage::RenameStartChannel(ch_id) => {
+            let name = controller
+                .channels
+                .iter()
+                .find(|c| c.id == ch_id)
+                .map(|c| c.name.clone())
+                .unwrap_or_default();
+            controller.rename_target = Some(RenameTarget::Channel(ch_id));
+            controller.rename_buffer = name;
+        }
+        InterfaceMessage::RenameStartSnapshot(slot) => {
+            controller.rename_target = Some(RenameTarget::Snapshot(slot));
+            controller.rename_buffer = controller
+                .snapshot_names
+                .get(slot)
+                .cloned()
+                .flatten()
+                .unwrap_or_default();
+        }
+        InterfaceMessage::SnapshotSaveStart(slot) => {
+            controller.rename_target = Some(RenameTarget::SnapshotSave(slot));
+            controller.rename_buffer = controller
+                .snapshot_names
+                .get(slot)
+                .cloned()
+                .flatten()
+                .unwrap_or_default();
+        }
+        InterfaceMessage::RenameChanged(value) => {
+            controller.rename_buffer = value;
+        }
+        InterfaceMessage::RenameCancel => {
+            controller.rename_target = None;
+            controller.rename_buffer.clear();
+        }
+        InterfaceMessage::RenameSubmit => {
+            let Some(target) = controller.rename_target.take() else {
+                return;
+            };
+            let name = controller.rename_buffer.clone();
+            controller.rename_buffer.clear();
+
+            if let RenameTarget::Channel(ch_id) = target {
+                if let Some(ch) = controller.channels.iter_mut().find(|c| c.id == ch_id) {
+                    ch.name = name.clone();
+                    ch.name_synced = true;
+                }
+            }
+
+            // snapshot ops get a fresh names channel the Tick loop consumes
+            let (snap_tx, snap_rx) = std::sync::mpsc::channel();
+            if matches!(target, RenameTarget::Snapshot(_) | RenameTarget::SnapshotSave(_)) {
+                controller.snapshot_names_receiver = Some(snap_rx);
+            }
+
+            let conn_arc = controller.ble_connection.clone();
+            std::thread::spawn(move || {
+                let Ok(guard) = conn_arc.lock() else {
+                    log_warn!("[BLE] Rename: connection mutex poisoned");
+                    return;
+                };
+                let Some(conn) = guard.as_ref() else {
+                    log_warn!("[BLE] Rename: not connected");
+                    return;
+                };
+                let result = match target {
+                    RenameTarget::Channel(ch_id) => {
+                        log!("[BLE] Renaming channel {} to \"{}\"", ch_id + 1, name);
+                        ble::send_channel_rename(conn, ch_id, &name)
+                    }
+                    RenameTarget::Snapshot(slot) => {
+                        log!("[BLE] Renaming snapshot {} to \"{}\"", slot + 1, name);
+                        ble::send_snapshot_rename(conn, slot as u8, &name)
+                    }
+                    RenameTarget::SnapshotSave(slot) => {
+                        log!("[BLE] Saving mixer state to snapshot {} as \"{}\"", slot + 1, name);
+                        ble::send_snapshot_save(conn, slot as u8, &name)
+                    }
+                };
+                match result {
+                    Ok(_) => log!("[BLE] Rename/save command sent"),
+                    Err(e) => log_warn!("[BLE] Rename/save failed: {}", e),
+                }
+                if matches!(target, RenameTarget::Snapshot(_) | RenameTarget::SnapshotSave(_)) {
+                    let names = ble::refresh_snapshot_names(conn);
+                    let _ = snap_tx.send(names);
+                }
+            });
         }
         InterfaceMessage::ResetMixer => {
             log!("[APP] Resetting mixer to default");

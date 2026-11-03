@@ -17,7 +17,7 @@ impl fmt::Display for Page {
             Page::DeviceSelect => "Device",
             Page::Mixer => "Mixer",
             Page::Eq => "EQ",
-            Page::Sends => "Sends",
+            Page::Sends => "Monitor",
             Page::Fx => "FX",
             Page::Snapshots => "Snapshots",
             Page::Settings => "Settings",

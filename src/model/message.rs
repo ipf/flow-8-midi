@@ -32,6 +32,7 @@ pub enum InterfaceMessage {
     BusBalance(BusIdx, BusId, u8),
     BusLimiter(BusIdx, BusId, u8),
     BusNineBandEq(BusIdx, BusId, u8, u8),
+    MonitorTab(usize),
 
     FxPreset(FxSlotId, u8),
     FxParam1(FxSlotId, u8),
@@ -41,6 +42,13 @@ pub enum InterfaceMessage {
 
     LoadSnapshot(u8),
     ResetMixer,
+
+    RenameStartChannel(ChannelId),
+    RenameStartSnapshot(usize),
+    SnapshotSaveStart(usize),
+    RenameChanged(String),
+    RenameSubmit,
+    RenameCancel,
 
     ThemeChanged(Theme),
     SyncIntervalChanged(SyncInterval),

@@ -31,7 +31,14 @@ pub fn match_midi_command(
         | InterfaceMessage::Tick
         | InterfaceMessage::BleConnect
         | InterfaceMessage::BleRequestDump
-        | InterfaceMessage::SyncIntervalChanged(_) => {}
+        | InterfaceMessage::SyncIntervalChanged(_)
+        | InterfaceMessage::MonitorTab(_)
+        | InterfaceMessage::RenameStartChannel(_)
+        | InterfaceMessage::RenameStartSnapshot(_)
+        | InterfaceMessage::SnapshotSaveStart(_)
+        | InterfaceMessage::RenameChanged(_)
+        | InterfaceMessage::RenameSubmit
+        | InterfaceMessage::RenameCancel => {}
 
         #[cfg(any(debug_assertions, feature = "dev-tools"))]
         InterfaceMessage::CopyHexDump => {}

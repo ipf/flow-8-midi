@@ -1,6 +1,9 @@
-use crate::model::{flow8::{FLOW8Controller, SNAPSHOT_COUNT}, message::InterfaceMessage};
+use crate::model::{
+    flow8::{FLOW8Controller, RenameTarget, SNAPSHOT_COUNT},
+    message::InterfaceMessage,
+};
 use iced::{
-    widget::{button, column, container, row, text, Space},
+    widget::{button, column, container, row, text, text_input, Space},
     Center, Element, Fill,
 };
 
@@ -41,6 +44,10 @@ pub fn view_snapshots(controller: &FLOW8Controller) -> Element<'_, InterfaceMess
 
             let has_name = name.is_some();
 
+            let editing_rename = controller.rename_target == Some(RenameTarget::Snapshot(i));
+            let editing_save = controller.rename_target == Some(RenameTarget::SnapshotSave(i));
+            let editing = editing_rename || editing_save;
+
             let btn_content = match name {
                 Some(n) => column![
                     text(format!("{:02}", snapshot_num))
@@ -71,7 +78,53 @@ pub fn view_snapshots(controller: &FLOW8Controller) -> Element<'_, InterfaceMess
                 .width(Fill)
                 .style(if has_name { button::primary } else { button::secondary });
 
-            row_items.push(btn.into());
+            // below the card: ✎ rename + Save, or the inline editor while editing
+            let below: Element<'_, InterfaceMessage> = if editing {
+                let editor_label: &str = if editing_save { "save as" } else { "rename" };
+                column![
+                    text_input(editor_label, &controller.rename_buffer)
+                        .on_input(InterfaceMessage::RenameChanged)
+                        .on_submit(InterfaceMessage::RenameSubmit)
+                        .size(12)
+                        .width(Fill),
+                    row![
+                        button(text("\u{2713}").size(11))
+                            .on_press(InterfaceMessage::RenameSubmit)
+                            .padding([2, 8])
+                            .style(button::success),
+                        button(text("\u{2715}").size(11))
+                            .on_press(InterfaceMessage::RenameCancel)
+                            .padding([2, 8])
+                            .style(button::secondary),
+                    ]
+                    .spacing(4),
+                ]
+                .align_x(Center)
+                .spacing(4)
+                .width(Fill)
+                .into()
+            } else {
+                row![
+                    button(text("\u{270E}").size(11))
+                        .on_press(InterfaceMessage::RenameStartSnapshot(i))
+                        .padding([2, 8])
+                        .style(button::secondary),
+                    button(text("Save").size(10))
+                        .on_press(InterfaceMessage::SnapshotSaveStart(i))
+                        .padding([2, 8])
+                        .style(button::secondary),
+                ]
+                .spacing(4)
+                .into()
+            };
+
+            row_items.push(
+                column![btn, below]
+                    .align_x(Center)
+                    .spacing(4)
+                    .width(Fill)
+                    .into(),
+            );
         }
 
         let remaining = GRID_COLS - row_items.len();
