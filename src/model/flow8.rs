@@ -97,6 +97,8 @@ pub struct FLOW8Controller {
     pub last_sync_time: Option<Instant>,
     pub snapshot_names: Vec<Option<String>>,
     pub snapshot_names_receiver: Option<mpsc::Receiver<Vec<Option<String>>>>,
+    /// when each slot was last saved from this app (local time, display only)
+    pub snapshot_dates: Vec<Option<String>>,
     pub fx_muted: bool,
     pub snapshot_resync_at: Option<Instant>,
     pub monitor_tab: usize,
@@ -221,6 +223,7 @@ impl FLOW8Controller {
             last_sync_time: None,
             snapshot_names: vec![None; SNAPSHOT_COUNT],
             snapshot_names_receiver: None,
+            snapshot_dates: vec![None; SNAPSHOT_COUNT],
             fx_muted: false,
             snapshot_resync_at: None,
             monitor_tab: 0,

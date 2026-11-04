@@ -6,12 +6,19 @@ use iced::{
     widget::{button, column, container, row, text, text_input, Space},
     Center, Element, Fill,
 };
-const GRID_COLS: usize = 4;
+const GRID_COLS: usize = 5;
 
 const EMPTY_NUM_COLOR: iced::Color = iced::Color {
     r: 0.45,
     g: 0.45,
     b: 0.45,
+    a: 1.0,
+};
+
+const DATE_COLOR: iced::Color = iced::Color {
+    r: 0.55,
+    g: 0.55,
+    b: 0.55,
     a: 1.0,
 };
 
@@ -42,6 +49,7 @@ pub fn snapshots_section(controller: &FLOW8Controller) -> Element<'_, InterfaceM
                 .snapshot_names
                 .get(i)
                 .and_then(|n| n.as_ref());
+            let save_date = controller.snapshot_dates.get(i).and_then(|d| d.as_ref());
 
             let has_name = name.is_some();
 
@@ -52,30 +60,37 @@ pub fn snapshots_section(controller: &FLOW8Controller) -> Element<'_, InterfaceM
             let btn_content = match name {
                 Some(n) => column![
                     text(format!("{:02}", snapshot_num))
-                        .size(20)
+                        .size(14)
                         .align_x(Center)
                         .color(AVAILABLE_NUM_COLOR),
                     text(n.as_str())
-                        .size(15)
+                        .size(12)
                         .align_x(Center)
                         .color(AVAILABLE_NAME_COLOR),
+                    text(save_date.map(String::as_str).unwrap_or(""))
+                        .size(9)
+                        .align_x(Center)
+                        .color(DATE_COLOR),
                 ]
                 .align_x(Center)
-                .spacing(4),
+                .spacing(3),
                 None => column![
                     text(format!("{:02}", snapshot_num))
-                        .size(20)
+                        .size(14)
                         .align_x(Center)
                         .color(EMPTY_NUM_COLOR),
-                    text(" ").size(15),
+                    text(save_date.map(String::as_str).unwrap_or(""))
+                        .size(9)
+                        .align_x(Center)
+                        .color(DATE_COLOR),
                 ]
                 .align_x(Center)
-                .spacing(4),
+                .spacing(3),
             };
 
             let btn = button(btn_content)
                 .on_press(InterfaceMessage::LoadSnapshot(i as u8))
-                .padding([16, 16])
+                .padding([8, 8])
                 .width(Fill)
                 .style(if has_name { button::primary } else { button::secondary });
 
@@ -109,11 +124,20 @@ pub fn snapshots_section(controller: &FLOW8Controller) -> Element<'_, InterfaceM
                 .width(Fill)
                 .into()
             } else {
-                row![
+                // rename is a no-op on an empty slot (nothing to rename):
+                // disabled until the slot holds a snapshot
+                let rename_btn = if has_name {
                     button(text("Rename").size(10))
                         .on_press(InterfaceMessage::RenameStartSnapshot(i))
                         .padding([3, 10])
-                        .style(button::secondary),
+                        .style(button::secondary)
+                } else {
+                    button(text("Rename").size(10))
+                        .padding([3, 10])
+                        .style(button::secondary)
+                };
+                row![
+                    rename_btn,
                     button(text("Save over").size(10))
                         .on_press(InterfaceMessage::SnapshotSaveStart(i))
                         .padding([3, 10])

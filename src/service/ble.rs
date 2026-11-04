@@ -682,12 +682,12 @@ pub fn send_setting(conn: &BleConnection, id: u8, value: u8) -> Result<(), Strin
     send_ble_command(conn, 0x25, &[id, value])
 }
 
-// ── VU meters: select output (0x41) + MeterRequest (0x21); device should
-// stream MeterUpdate (0x22) = [type][15 × f32 LE dB][u16 GR] ──
-// channel bytes = id | 0x40 (mono) / 0xC0 (stereo); 0x8F = main LR (static default)
-const METER_REQUEST_PACKET: [u8; 10] = [
-    0x21, 0x08, 0x40, 0x41, 0x42, 0x43, 0xC4, 0xC5, 0xC6, 0x8F,
-];
+// ── VU meters: MeterRequest (0x21); device streams MeterUpdate (0x22) ──
+// Official layout (setMeterOutputChannelId @0xb1564 in the native lib):
+// count byte + 10 channel ids copied from METER_REQUEST_CHANNELS
+// (40 41 42 43 C4 C5 C6 8F + 2 zero pad); the app's wire serializer moves
+// the type byte into the 6-byte chunk header, so the payload has NO type.
+const METER_IDS: [u8; 10] = [0x40, 0x41, 0x42, 0x43, 0xC4, 0xC5, 0xC6, 0x8F, 0x00, 0x00];
 const METER_UPDATE_TYPE: u8 = 0x22;
 
 /// piecewise dB → linear 0..1 (−70 dB floor → 0, 0 dBFS → 1.0), from the official app
@@ -782,7 +782,13 @@ pub fn start_meter_loop(
                 }
                 if first_data {
                     first_data = false;
-                    log!("[BLE] Meter data flowing ({} floats)", values.len());
+                    let floats: Vec<String> =
+                        values.iter().map(|f| format!("{:.1}", f)).collect();
+                    log!(
+                        "[BLE] Meter data flowing ({} floats): {}",
+                        values.len(),
+                        floats.join(" ")
+                    );
                 }
                 let _ = meter_tx.send(values);
             }
@@ -791,30 +797,40 @@ pub fn start_meter_loop(
 }
 
 async fn send_meter_request(peripheral: &Peripheral, characteristic: &Characteristic, variant: u32) {
-    // official wire format (from xairbt_out_queue_write_cmd): 6-byte header
-    // [len u16][type][chunk_idx][chunk_count][seq] + payload, payload = the
-    // cmd's field bytes WITHOUT the type (the serializer never emits it).
-    // Cycle the combinations per re-request; the log names what preceded data.
-    let select_payload = [0x0Fu8]; // select Main LR (0x41's field byte)
-    let request_payload = [0x08u8, 0x40, 0x41, 0x42, 0x43, 0xC4, 0xC5, 0xC6, 0x8F];
-    let frame = |ptype: u8, payload: &[u8]| -> Vec<u8> {
-        let mut p = vec![payload.len() as u8, 0, ptype, 0, 1, 0];
-        p.extend_from_slice(payload);
+    // Official MeterRequest payload = [count=8][10 channel ids] (count at
+    // struct[24], ids at struct[25..35] in the native lib). The device
+    // accepts bare writes when sizes match (the 0x07 names request proves
+    // it), so cycle bare / 6-byte-header-framed / full-struct and let the
+    // 0x22 stream tell us which shape it takes.
+    let mut payload = Vec::with_capacity(11);
+    payload.push(0x08); // meter channel count (output selected → 8)
+    payload.extend_from_slice(&METER_IDS);
+    let framed: Vec<u8> = {
+        // wire header [len u16 LE][type][chunk_idx][chunk_count][seq]
+        let mut p = vec![payload.len() as u8, 0, 0x21, 0, 1, 0];
+        p.extend_from_slice(&payload);
         p
     };
-    let (select, request, mode) = match variant % 3 {
-        0 => ([0x41u8, 0x0F].to_vec(), METER_REQUEST_PACKET.to_vec(), "bare+bare"),
-        1 => (frame(0x41, &select_payload), frame(0x21, &request_payload), "framed+framed"),
-        _ => (frame(0x41, &select_payload), METER_REQUEST_PACKET.to_vec(), "framed+bare"),
+    // [0x21] + 23 zero bytes (struct bytes 1..24) + payload — if the device's
+    // bare parser copies into struct bytes 1.., count lands at struct[24]
+    let mut bare_struct = vec![0x21u8; 24];
+    bare_struct.extend_from_slice(&payload);
+    let (packet, mode) = match variant % 3 {
+        0 => ([vec![0x21u8], payload.clone()].concat(), "bare"),
+        1 => (framed, "framed"),
+        _ => (bare_struct, "bare-struct"),
     };
-    log_debug!("[BLE] Meter request variant {} ({} )", variant % 3, mode);
-    for packet in [&select[..], &request[..]] {
-        let write = peripheral.write(characteristic, packet, WriteType::WithoutResponse);
-        match tokio::time::timeout(Duration::from_millis(1500), write).await {
-            Ok(Ok(_)) => {}
-            Ok(Err(e)) => log_debug!("[BLE] Meter request write error: {}", e),
-            Err(_) => log_debug!("[BLE] Meter request: no ack (packet still delivered)"),
-        }
+    log_debug!(
+        "[BLE] Meter request variant {} ({}, {} bytes)",
+        variant % 3,
+        mode,
+        packet.len()
+    );
+    let write = peripheral.write(characteristic, &packet, WriteType::WithoutResponse);
+    match tokio::time::timeout(Duration::from_millis(1500), write).await {
+        Ok(Ok(_)) => {}
+        Ok(Err(e)) => log_debug!("[BLE] Meter request write error: {}", e),
+        Err(_) => log_debug!("[BLE] Meter request: no ack (packet still delivered)"),
     }
 }
 
@@ -830,10 +846,8 @@ pub fn refresh_snapshot_names(conn: &BleConnection) -> Vec<Option<String>> {
         }
     };
     rt.block_on(async {
-        if conn.peripheral.subscribe(&conn.characteristic).await.is_err() {
-            log_warn!("[BLE] Snapshot refresh: subscribe failed");
-            return Vec::new();
-        }
+        // no subscribe() here: the session-level subscription from connect is
+        // already active and a second one stalls on BlueZ (~30 s D-Bus timeout)
         let stream = match conn.peripheral.notifications().await {
             Ok(s) => s,
             Err(e) => {
