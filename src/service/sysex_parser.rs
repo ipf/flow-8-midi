@@ -524,6 +524,20 @@ fn range_to_cc(value: f32, min: f32, max: f32) -> u8 {
     (normalized * 127.0).round() as u8
 }
 
+/// gain dB → CC for the preset applier (same scale as the Gain knob)
+pub fn preset_gain_to_cc(db: f32) -> u8 {
+    range_to_cc(db, GAIN_MIN, GAIN_MAX)
+}
+
+/// HPF Hz → CC for the preset applier (0 Hz = off → knob minimum)
+pub fn preset_hpf_to_cc(hz: u16) -> u8 {
+    if hz == 0 {
+        0
+    } else {
+        lowcut_hz_to_cc(hz)
+    }
+}
+
 // ── Channel parameter apply functions ──────────────────────────────────
 
 fn apply_channel_levels(dump: &SysExDump, controller: &mut FLOW8Controller) -> usize {

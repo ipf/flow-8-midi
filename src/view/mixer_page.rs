@@ -10,8 +10,8 @@ use crate::view::widgets::{
 };
 use iced::{
     widget::{
-        button, column, container, row, text, text_input, tooltip, tooltip::Position,
-        Column, Space,
+        button, column, container, pick_list, row, text, text_input, tooltip,
+        tooltip::Position, Column, Space,
     },
     Center, Color, Element, Fill, Length,
 };
@@ -183,6 +183,28 @@ fn build_channel_strip<'a>(
 
     let strip = &channel.channel_strip;
     let ch_id = channel.id;
+
+    // ── input preset picker (the 8 official presets) ──
+    {
+        let preset_names: Vec<&'static str> =
+            crate::model::presets::INPUT_PRESETS.iter().map(|p| p.name).collect();
+        let selected = crate::model::presets::INPUT_PRESETS
+            .iter()
+            .find(|p| p.name == channel.name.as_str())
+            .map(|p| p.name);
+        col = col.push(
+            pick_list(preset_names, selected, move |name| {
+                let idx = crate::model::presets::INPUT_PRESETS
+                    .iter()
+                    .position(|p| p.name == name)
+                    .unwrap_or(0) as u8;
+                InterfaceMessage::LoadInputPreset(ch_id, idx)
+            })
+            .text_size(10)
+            .padding([2, 4])
+            .width(Fill),
+        );
+    }
 
     // ── SSL-style strip: gain / EQ / dynamics / sends knobs above the fader ──
     if channel.has_gain() {

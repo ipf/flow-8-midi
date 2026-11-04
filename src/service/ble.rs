@@ -682,6 +682,30 @@ pub fn send_setting(conn: &BleConnection, id: u8, value: u8) -> Result<(), Strin
     send_ble_command(conn, 0x25, &[id, value])
 }
 
+/// Input preset load: InputChannelState (op 0x17). Official layout
+/// (loadInputChannelPreset @0xb66f4 + setChannelState @0xfb284 in the native
+/// lib): cmd[0]=0x17, cmd[24]=ch_id, then the input-channel state —
+/// flags at +1..4 (stereo, mute, phase, phantom), gain f32 at +12,
+/// compressor f32 at +16, HPF Hz u16 at +20, pan f32 at +24,
+/// icon u16 at +70, channel label (%.20s) at +72.
+pub fn send_input_preset(
+    conn: &BleConnection,
+    ch_id: u8,
+    preset: &crate::model::presets::InputPreset,
+) -> Result<(), String> {
+    let mut payload = vec![0u8; 23 + 100];
+    payload[23] = ch_id; // cmd[24]
+    payload[24] = 0x01; // state+1: stereo flag (official presets set 1)
+                        // state+2/+3 (mute, phase) stay 0
+    payload[27] = preset.phantom as u8; // state+4
+    payload[23 + 12..23 + 16].copy_from_slice(&(preset.gain_db as f32).to_le_bytes());
+    payload[23 + 20..23 + 22].copy_from_slice(&preset.hpf_hz.to_le_bytes());
+    // pan f32 at state+24 stays 0.0 (center); sends f32s at state+28..44 = 0
+    let label: Vec<u8> = preset.name.bytes().take(20).collect(); // %.20s
+    payload[23 + 72..23 + 72 + label.len()].copy_from_slice(&label);
+    send_ble_command(conn, 0x17, &payload)
+}
+
 // ── VU meters: MeterRequest (0x21); device streams MeterUpdate (0x22) ──
 // Official layout (setMeterOutputChannelId @0xb1564 in the native lib):
 // count byte + 10 channel ids copied from METER_REQUEST_CHANNELS

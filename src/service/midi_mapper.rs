@@ -40,6 +40,7 @@ pub fn match_midi_command(
         | InterfaceMessage::RenameSubmit
         | InterfaceMessage::RenameCancel
         | InterfaceMessage::DeleteSnapshot(_)
+        | InterfaceMessage::LoadInputPreset(_, _)
         | InterfaceMessage::SetDeviceSetting(_, _)
         | InterfaceMessage::TapTempo => {}
 
