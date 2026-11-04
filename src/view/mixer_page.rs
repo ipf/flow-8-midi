@@ -20,8 +20,9 @@ use std::time::Instant;
 const FADER_HEIGHT: f32 = 150.0;
 const BUS_FADER_HEIGHT: f32 = 150.0;
 const METER_WIDTH: f32 = 9.0;
-const KNOB_SIZE: f32 = 34.0;
-const KNOB_SLOT_HEIGHT: f32 = 48.0;
+const KNOB_SIZE: f32 = 28.0;
+// label (12) + spacing (1) + knob (28): reserve slots match real knob rows
+const KNOB_SLOT_HEIGHT: f32 = 41.0;
 const EQ_KNOB_SIZE: f32 = 28.0;
 
 /// thin vertical VU bar, filled bottom-up; value is linear 0..1.
@@ -134,8 +135,8 @@ fn build_channel_strip<'a>(
         .width(Fill)
         .height(Fill)
         .align_x(Center)
-        .spacing(6)
-        .padding([10, 6]);
+        .spacing(4)
+        .padding([8, 6]);
 
     let renaming = controller.rename_target == Some(RenameTarget::Channel(channel.id));
     if renaming {
@@ -441,8 +442,8 @@ fn build_bus_strip(bus: &Bus) -> Element<'_, InterfaceMessage> {
         .width(Fill)
         .height(Fill)
         .align_x(Center)
-        .spacing(6)
-        .padding([10, 6]);
+        .spacing(4)
+        .padding([8, 6]);
 
     let bus_idx = bus.index;
     let bus_id = bus.id;
@@ -515,6 +516,8 @@ fn build_bus_strip(bus: &Bus) -> Element<'_, InterfaceMessage> {
     col = col.push(
         column![
             sync_label("Level", 12.0, bus.bus_strip.level_synced),
+            // mirrors the channel strips' clip light slot so Level labels align
+            Space::new().height(Length::Fixed(12.0)),
             v_slider(1..=127, bus.bus_strip.level, BUS_FADER_HEIGHT, move |v| {
                 InterfaceMessage::BusLevel(bus_idx, bus_id, v)
             }, format_level(bus.bus_strip.level)),

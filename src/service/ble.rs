@@ -1,7 +1,9 @@
 use btleplug::api::{
-    Central, Characteristic, Manager as _, Peripheral as _, ScanFilter, WriteType,
+    Central, Characteristic, Manager as _, Peripheral as _, ScanFilter, ValueNotification,
+    WriteType,
 };
 use btleplug::platform::{Adapter, Manager, Peripheral};
+use std::pin::Pin;
 use std::sync::mpsc;
 use std::time::Duration;
 use uuid::Uuid;
@@ -24,6 +26,10 @@ const DUMP_TRIGGER_PACKET: [u8; 3] = [0x4B, 0x01, 0x4C];
 
 const SNAPSHOT_RESPONSE_TYPE: u8 = 0x27;
 const STATE_DUMP_TYPE: u8 = 0x38;
+
+/// the shared GATT notification stream (one subscribe per connection; every
+/// consumer — handshake, snapshot fetch, meter loop — reads from it in turn)
+type NotifyStream = Pin<Box<dyn tokio_stream::Stream<Item = ValueNotification> + Send>>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BleStatus {
@@ -172,7 +178,7 @@ const MAX_CONNECT_RETRIES: u32 = 2;
 async fn connect_and_auth(
     peripheral: &Peripheral,
     status_tx: &mpsc::Sender<BleStatus>,
-) -> Result<Characteristic, String> {
+) -> Result<(Characteristic, NotifyStream), String> {
     let mut last_err = String::new();
 
     for attempt in 0..=MAX_CONNECT_RETRIES {
@@ -211,6 +217,26 @@ async fn connect_and_auth(
         log!("[BLE] Characteristic found.");
         let _ = status_tx.send(BleStatus::Authenticating);
 
+        // subscribe BEFORE auth: the device pushes its 0x37 handshake challenge
+        // right after the auth key, and notifications sent before the CCCD is
+        // on are lost — without the challenge the session never completes and
+        // the device never streams meters
+        if let Err(e) = peripheral.subscribe(&characteristic).await {
+            log_warn!("[BLE] Subscribe failed: {}", e);
+            last_err = format!("Subscribe failed: {}", e);
+            peripheral.disconnect().await.ok();
+            continue;
+        }
+        let mut stream = match peripheral.notifications().await {
+            Ok(s) => s,
+            Err(e) => {
+                log_warn!("[BLE] Notification stream error: {}", e);
+                last_err = format!("Notification stream error: {}", e);
+                peripheral.disconnect().await.ok();
+                continue;
+            }
+        };
+
         log!("[BLE] Sending auth key...");
         if let Err(e) = peripheral
             .write(&characteristic, &AUTH_PACKET, WriteType::WithResponse)
@@ -235,13 +261,57 @@ async fn connect_and_auth(
             continue;
         }
 
-        tokio::time::sleep(Duration::from_millis(500)).await;
+        // the device answers with a 0x37 handshake challenge; reply with the
+        // auth key (0x39 + key bytes) to complete the session
+        match wait_for_cmd(&mut stream, 0x37, Duration::from_secs(3)).await {
+            Some(_) => {
+                log!("[BLE] Handshake challenge received, replying with auth key...");
+                let reply: Vec<u8> = [0x39].iter().copied().chain(AUTH_PACKET[2..18].iter().copied()).collect();
+                let write = peripheral.write(&characteristic, &reply, WriteType::WithoutResponse);
+                match tokio::time::timeout(Duration::from_millis(1500), write).await {
+                    Ok(Ok(_)) => {}
+                    Ok(Err(e)) => log_warn!("[BLE] Handshake reply write failed: {}", e),
+                    Err(_) => log_debug!("[BLE] Handshake reply: no ack (packet still delivered)"),
+                }
+                // device should now push the 0x38 state dump and stream meters
+                match wait_for_cmd(&mut stream, 0x38, Duration::from_secs(3)).await {
+                    Some(_) => log!("[BLE] State dump received — session established"),
+                    None => log_warn!("[BLE] No state dump after handshake reply"),
+                }
+            }
+            None => log_warn!("[BLE] No handshake challenge received, proceeding anyway"),
+        }
 
         log!("[BLE] Authenticated and session started");
-        return Ok(characteristic);
+        return Ok((characteristic, stream));
     }
 
     Err(last_err)
+}
+
+/// Pull notifications until one of the wanted type arrives (payload returned),
+/// or the timeout elapses (None). Other notifications are logged and dropped.
+async fn wait_for_cmd(stream: &mut NotifyStream, ptype: u8, timeout: Duration) -> Option<Vec<u8>> {
+    use tokio_stream::StreamExt;
+    tokio::time::timeout(timeout, async {
+        while let Some(n) = stream.next().await {
+            if n.value.is_empty() {
+                continue;
+            }
+            if n.value[0] == ptype {
+                return Some(n.value);
+            }
+            log_debug!(
+                "[BLE] (handshake) notification type=0x{:02X} len={}",
+                n.value[0],
+                n.value.len()
+            );
+        }
+        None
+    })
+    .await
+    .ok()
+    .flatten()
 }
 
 fn parse_snapshot_names(data: &[u8]) -> Vec<Option<String>> {
@@ -304,36 +374,10 @@ fn parse_snapshot_names(data: &[u8]) -> Vec<Option<String>> {
 async fn fetch_snapshot_names(
     peripheral: &Peripheral,
     characteristic: &Characteristic,
+    meter_tx: Option<mpsc::Sender<Vec<f32>>>,
+    mut notification_stream: NotifyStream,
 ) -> Result<Vec<Option<String>>, String> {
     use tokio_stream::StreamExt;
-
-    log!("[BLE] Subscribing to notifications for snapshot fetch...");
-    let mut subscribed = false;
-    for attempt in 0..3u64 {
-        if attempt > 0 {
-            tokio::time::sleep(Duration::from_millis(500 * attempt)).await;
-        }
-        match peripheral.subscribe(characteristic).await {
-            Ok(_) => {
-                subscribed = true;
-                break;
-            }
-            Err(e) => log_warn!("[BLE] Subscribe attempt {}/3: {}", attempt + 1, e),
-        }
-    }
-    if !subscribed {
-        log_warn!("[BLE] Subscribe failed after 3 attempts, snapshot names unavailable");
-        return Ok(Vec::new());
-    }
-
-    let mut notification_stream = match peripheral.notifications().await {
-        Ok(s) => s,
-        Err(e) => {
-            log_warn!("[BLE] Notification stream error: {}", e);
-            peripheral.unsubscribe(characteristic).await.ok();
-            return Ok(Vec::new());
-        }
-    };
 
     log!("[BLE] Draining state dump (0x38)...");
     let drain_result = tokio::time::timeout(Duration::from_secs(3), async {
@@ -371,7 +415,6 @@ async fn fetch_snapshot_names(
         .await
     {
         log_warn!("[BLE] Config request write failed: {}", e);
-        peripheral.unsubscribe(characteristic).await.ok();
         return Ok(Vec::new());
     }
 
@@ -392,6 +435,18 @@ async fn fetch_snapshot_names(
         None
     })
     .await;
+
+    // the subscription stays alive for the session: hand the open notification
+    // stream to the meter loop (a second subscribe()/notifications() call
+    // stalls on BlueZ, so it must reuse this one)
+    if let Some(meter_tx) = meter_tx {
+        start_meter_loop(
+            peripheral.clone(),
+            characteristic.clone(),
+            notification_stream,
+            meter_tx,
+        );
+    }
 
     // keep the subscription alive for the session (the meter stream shares it)
     match result {
@@ -434,7 +489,7 @@ pub fn connect_flow8_ble(
             }
         };
 
-        let characteristic = match connect_and_auth(&peripheral, &status_tx).await {
+        let (characteristic, notification_stream) = match connect_and_auth(&peripheral, &status_tx).await {
             Ok(c) => c,
             Err(e) => {
                 let _ = status_tx.send(BleStatus::Error);
@@ -444,18 +499,20 @@ pub fn connect_flow8_ble(
 
         let _ = status_tx.send(BleStatus::Connected);
 
-        match fetch_snapshot_names(&peripheral, &characteristic).await {
+        match fetch_snapshot_names(
+            &peripheral,
+            &characteristic,
+            Some(meter_tx),
+            notification_stream,
+        )
+        .await
+        {
             Ok(names) if !names.is_empty() => {
                 let _ = snapshot_tx.send(names);
             }
             Ok(_) => log_warn!("[BLE] No snapshot names received"),
             Err(e) => log_warn!("[BLE] Failed to get snapshot names: {}", e),
         }
-
-        start_meter_stream(&BleConnection {
-            peripheral: peripheral.clone(),
-            characteristic: characteristic.clone(),
-        }, meter_tx);
 
         Ok(BleConnection {
             peripheral,
@@ -563,8 +620,9 @@ pub fn send_setting(conn: &BleConnection, id: u8, value: u8) -> Result<(), Strin
     send_ble_command(conn, 0x25, &[id, value])
 }
 
-// ── VU meters: one MeterRequest (0x21), then the device streams MeterUpdate (0x22) ──
-// channel bytes = id | 0x40 (mono) / 0xC0 (stereo); 0x8F = main LR
+// ── VU meters: select output (0x41) + MeterRequest (0x21); device should
+// stream MeterUpdate (0x22) = [type][15 × f32 LE dB][u16 GR] ──
+// channel bytes = id | 0x40 (mono) / 0xC0 (stereo); 0x8F = main LR (static default)
 const METER_REQUEST_PACKET: [u8; 10] = [
     0x21, 0x08, 0x40, 0x41, 0x42, 0x43, 0xC4, 0xC5, 0xC6, 0x8F,
 ];
@@ -592,45 +650,58 @@ pub fn meter_db_to_linear(db: f32) -> f32 {
     v / 100.0
 }
 
-/// Spawn a persistent meter thread: subscribes once, sends MeterRequest (0x21),
-/// then parses MeterUpdate (0x22) notifications and forwards 15 raw dB floats.
-/// Falls back to re-requesting every 5 s if no updates arrive.
-pub fn start_meter_stream(conn: &BleConnection, meter_tx: mpsc::Sender<Vec<f32>>) {
-    let peripheral = conn.peripheral.clone();
-    let characteristic = conn.characteristic.clone();
+/// Run the meter receive loop on a thread, using the notification stream that
+/// fetch_snapshot_names already opened (a second subscribe()/notifications()
+/// call stalls on BlueZ). Sends MeterRequest (0x21), then parses
+/// MeterUpdate (0x22) notifications into 15 raw dB floats; re-requests
+/// after 5 s of silence.
+pub fn start_meter_loop(
+    peripheral: Peripheral,
+    characteristic: Characteristic,
+    notifications: NotifyStream,
+    meter_tx: mpsc::Sender<Vec<f32>>,
+) {
     std::thread::spawn(move || {
         let rt = match tokio::runtime::Runtime::new() {
             Ok(rt) => rt,
             Err(_) => return,
         };
-        rt.block_on(async {
+        rt.block_on(async move {
             use tokio_stream::StreamExt;
 
-            if peripheral.subscribe(&characteristic).await.is_err() {
-                log_warn!("[BLE] Meter stream: subscribe failed");
-                return;
-            }
-            let mut notifications = match peripheral.notifications().await {
-                Ok(s) => s,
-                Err(_) => return,
-            };
+            let mut notifications = notifications;
+            let mut first_data = true;
+            let mut other_logged = 0u32;
+            let mut request_variant = 0u32;
+            log!("[BLE] Meter loop running (shared notification stream)");
+            send_meter_request(&peripheral, &characteristic, request_variant).await;
 
-            log!("[BLE] Meter stream: requesting meters (0x21)...");
-            send_meter_request(&peripheral, &characteristic).await;
-
-            // 5 s of silence → re-request (device may have stopped pushing)
+            // 5 s of silence → re-request with the next variant (device may
+            // have stopped pushing, or the request shape is wrong)
             loop {
                 let notification =
                     match tokio::time::timeout(Duration::from_secs(5), notifications.next()).await
                     {
                         Ok(Some(n)) => n,
-                        Ok(None) => break,
+                        Ok(None) => {
+                            log_warn!("[BLE] Meter loop: notification stream ended");
+                            break;
+                        }
                         Err(_) => {
-                            send_meter_request(&peripheral, &characteristic).await;
+                            request_variant += 1;
+                            send_meter_request(&peripheral, &characteristic, request_variant).await;
                             continue;
                         }
                     };
                 if notification.value.is_empty() || notification.value[0] != METER_UPDATE_TYPE {
+                    if other_logged < 3 {
+                        other_logged += 1;
+                        log_debug!(
+                            "[BLE] Meter loop: non-meter notification type=0x{:02X} len={}",
+                            notification.value.first().copied().unwrap_or(0),
+                            notification.value.len()
+                        );
+                    }
                     continue;
                 }
                 // payload = [0x22][15 × f32 LE dB][u16 GR at +60]
@@ -647,24 +718,47 @@ pub fn start_meter_stream(conn: &BleConnection, meter_tx: mpsc::Sender<Vec<f32>>
                         ]));
                     }
                 }
+                if first_data {
+                    first_data = false;
+                    log!("[BLE] Meter data flowing ({} floats)", values.len());
+                }
                 let _ = meter_tx.send(values);
             }
         });
     });
 }
 
-async fn send_meter_request(peripheral: &Peripheral, characteristic: &Characteristic) {
-    // cap the ack wait; the request itself is delivered
-    let write = peripheral.write(
-        characteristic,
-        &METER_REQUEST_PACKET,
-        WriteType::WithoutResponse,
-    );
-    let _ = tokio::time::timeout(Duration::from_millis(1500), write).await;
+async fn send_meter_request(peripheral: &Peripheral, characteristic: &Characteristic, variant: u32) {
+    // official wire format (from xairbt_out_queue_write_cmd): 6-byte header
+    // [len u16][type][chunk_idx][chunk_count][seq] + payload, payload = the
+    // cmd's field bytes WITHOUT the type (the serializer never emits it).
+    // Cycle the combinations per re-request; the log names what preceded data.
+    let select_payload = [0x0Fu8]; // select Main LR (0x41's field byte)
+    let request_payload = [0x08u8, 0x40, 0x41, 0x42, 0x43, 0xC4, 0xC5, 0xC6, 0x8F];
+    let frame = |ptype: u8, payload: &[u8]| -> Vec<u8> {
+        let mut p = vec![payload.len() as u8, 0, ptype, 0, 1, 0];
+        p.extend_from_slice(payload);
+        p
+    };
+    let (select, request, mode) = match variant % 3 {
+        0 => ([0x41u8, 0x0F].to_vec(), METER_REQUEST_PACKET.to_vec(), "bare+bare"),
+        1 => (frame(0x41, &select_payload), frame(0x21, &request_payload), "framed+framed"),
+        _ => (frame(0x41, &select_payload), METER_REQUEST_PACKET.to_vec(), "framed+bare"),
+    };
+    log_debug!("[BLE] Meter request variant {} ({} )", variant % 3, mode);
+    for packet in [&select[..], &request[..]] {
+        let write = peripheral.write(characteristic, packet, WriteType::WithoutResponse);
+        match tokio::time::timeout(Duration::from_millis(1500), write).await {
+            Ok(Ok(_)) => {}
+            Ok(Err(e)) => log_debug!("[BLE] Meter request write error: {}", e),
+            Err(_) => log_debug!("[BLE] Meter request: no ack (packet still delivered)"),
+        }
+    }
 }
 
-/// Re-fetch the snapshot list from the device. Reuses the connect-time fetch flow
-/// (subscribe retries → GetSnapshotList 0x07 → wait 0x27 response → parse → unsubscribe).
+/// Re-fetch the snapshot list from the device. One-shot: opens its own
+/// notification stream (btleplug broadcasts to every stream) so the meter
+/// loop's stream is untouched.
 pub fn refresh_snapshot_names(conn: &BleConnection) -> Vec<Option<String>> {
     let rt = match tokio::runtime::Runtime::new() {
         Ok(rt) => rt,
@@ -674,7 +768,18 @@ pub fn refresh_snapshot_names(conn: &BleConnection) -> Vec<Option<String>> {
         }
     };
     rt.block_on(async {
-        match fetch_snapshot_names(&conn.peripheral, &conn.characteristic).await {
+        if conn.peripheral.subscribe(&conn.characteristic).await.is_err() {
+            log_warn!("[BLE] Snapshot refresh: subscribe failed");
+            return Vec::new();
+        }
+        let stream = match conn.peripheral.notifications().await {
+            Ok(s) => s,
+            Err(e) => {
+                log_warn!("[BLE] Snapshot refresh: notification stream error: {}", e);
+                return Vec::new();
+            }
+        };
+        match fetch_snapshot_names(&conn.peripheral, &conn.characteristic, None, stream).await {
             Ok(names) => names,
             Err(e) => {
                 log_warn!("[BLE] Snapshot refresh failed: {}", e);
