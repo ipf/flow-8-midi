@@ -102,6 +102,11 @@ pub struct FLOW8Controller {
     pub monitor_tab: usize,
     pub rename_target: Option<RenameTarget>,
     pub rename_buffer: String,
+    pub tap_times: Vec<Instant>,
+    pub delete_pending: Option<(usize, Instant)>,
+    pub meter_receiver: Option<mpsc::Receiver<Vec<f32>>>,
+    /// last value sent per device setting id (0x01..=0x0f); not read back from device
+    pub ble_settings: [Option<u8>; 128],
     #[cfg(any(debug_assertions, feature = "dev-tools"))]
     pub calibration: CalibrationState,
 }
@@ -110,6 +115,23 @@ const CHANNEL_RANGE: RangeInclusive<u8> = 0..=6;
 const BUS_RANGE: RangeInclusive<u8> = 7..=11;
 
 impl FLOW8Controller {
+    /// 5-tap rolling average BPM (like the official app), None until 2+ taps.
+    pub fn current_tap_bpm(&self) -> Option<u16> {
+        let times = &self.tap_times;
+        if times.len() < 2 {
+            return None;
+        }
+        let intervals: Vec<f32> = times
+            .windows(2)
+            .map(|w| (w[1] - w[0]).as_secs_f32())
+            .collect();
+        let avg: f32 = intervals.iter().sum::<f32>() / intervals.len() as f32;
+        if avg <= 0.0 {
+            return None;
+        }
+        Some((60.0 / avg).round().clamp(30.0, 300.0) as u16)
+    }
+
     pub fn mark_all_synced(&mut self) {
         for ch in &mut self.channels {
             ch.mark_all_synced();
@@ -202,6 +224,10 @@ impl FLOW8Controller {
             monitor_tab: 0,
             rename_target: None,
             rename_buffer: String::new(),
+            tap_times: Vec::new(),
+            delete_pending: None,
+            meter_receiver: None,
+            ble_settings: [None; 128],
             #[cfg(any(debug_assertions, feature = "dev-tools"))]
             calibration: CalibrationState::new(),
         }

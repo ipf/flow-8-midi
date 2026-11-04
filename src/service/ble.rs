@@ -393,8 +393,7 @@ async fn fetch_snapshot_names(
     })
     .await;
 
-    peripheral.unsubscribe(characteristic).await.ok();
-
+    // keep the subscription alive for the session (the meter stream shares it)
     match result {
         Ok(Some(names)) => {
             let named_count = names.iter().filter(|n| n.is_some()).count();
@@ -419,6 +418,7 @@ async fn fetch_snapshot_names(
 pub fn connect_flow8_ble(
     status_tx: mpsc::Sender<BleStatus>,
     snapshot_tx: mpsc::Sender<Vec<Option<String>>>,
+    meter_tx: mpsc::Sender<Vec<f32>>,
 ) -> Result<BleConnection, String> {
     let rt = tokio::runtime::Runtime::new().map_err(|e| format!("Tokio runtime error: {}", e))?;
 
@@ -451,6 +451,11 @@ pub fn connect_flow8_ble(
             Ok(_) => log_warn!("[BLE] No snapshot names received"),
             Err(e) => log_warn!("[BLE] Failed to get snapshot names: {}", e),
         }
+
+        start_meter_stream(&BleConnection {
+            peripheral: peripheral.clone(),
+            characteristic: characteristic.clone(),
+        }, meter_tx);
 
         Ok(BleConnection {
             peripheral,
@@ -540,6 +545,122 @@ pub fn send_snapshot_save(conn: &BleConnection, slot: u8, name: &str) -> Result<
     let mut payload = vec![slot];
     payload.extend_from_slice(name.as_bytes());
     send_ble_command(conn, CMD_SNAPSHOT_SAVE, &payload)
+}
+
+/// Delete a device snapshot slot: SnapshotDelete (op 0x12), [slot].
+pub fn send_snapshot_delete(conn: &BleConnection, slot: u8) -> Result<(), String> {
+    send_ble_command(conn, 0x12, &[slot])
+}
+
+/// FX tempo: official app computes a 5-tap rolling average, then sends op 0x40 [u16 bpm LE].
+pub fn send_fx_tempo(conn: &BleConnection, bpm: u16) -> Result<(), String> {
+    send_ble_command(conn, 0x40, &[bpm as u8, (bpm >> 8) as u8])
+}
+
+/// Device setting write: Setting (op 0x25), [id][value].
+/// shortcut: packet form unverified on-device; if ignored, try variants.
+pub fn send_setting(conn: &BleConnection, id: u8, value: u8) -> Result<(), String> {
+    send_ble_command(conn, 0x25, &[id, value])
+}
+
+// ── VU meters: one MeterRequest (0x21), then the device streams MeterUpdate (0x22) ──
+// channel bytes = id | 0x40 (mono) / 0xC0 (stereo); 0x8F = main LR
+const METER_REQUEST_PACKET: [u8; 10] = [
+    0x21, 0x08, 0x40, 0x41, 0x42, 0x43, 0xC4, 0xC5, 0xC6, 0x8F,
+];
+const METER_UPDATE_TYPE: u8 = 0x22;
+
+/// piecewise dB → linear 0..1 (−70 dB floor → 0, 0 dBFS → 1.0), from the official app
+pub fn meter_db_to_linear(db: f32) -> f32 {
+    let v = if db < -70.0 {
+        0.0
+    } else if db < -60.0 {
+        0.25 * (db + 70.0)
+    } else if db < -50.0 {
+        2.5 + 0.5 * (db + 60.0)
+    } else if db < -40.0 {
+        7.5 + 0.75 * (db + 50.0)
+    } else if db < -30.0 {
+        15.0 + 1.5 * (db + 40.0)
+    } else if db < -20.0 {
+        30.0 + 2.0 * (db + 30.0)
+    } else if db < 0.0 {
+        50.0 + 2.5 * (db + 20.0)
+    } else {
+        100.0
+    };
+    v / 100.0
+}
+
+/// Spawn a persistent meter thread: subscribes once, sends MeterRequest (0x21),
+/// then parses MeterUpdate (0x22) notifications and forwards 15 raw dB floats.
+/// Falls back to re-requesting every 5 s if no updates arrive.
+pub fn start_meter_stream(conn: &BleConnection, meter_tx: mpsc::Sender<Vec<f32>>) {
+    let peripheral = conn.peripheral.clone();
+    let characteristic = conn.characteristic.clone();
+    std::thread::spawn(move || {
+        let rt = match tokio::runtime::Runtime::new() {
+            Ok(rt) => rt,
+            Err(_) => return,
+        };
+        rt.block_on(async {
+            use tokio_stream::StreamExt;
+
+            if peripheral.subscribe(&characteristic).await.is_err() {
+                log_warn!("[BLE] Meter stream: subscribe failed");
+                return;
+            }
+            let mut notifications = match peripheral.notifications().await {
+                Ok(s) => s,
+                Err(_) => return,
+            };
+
+            log!("[BLE] Meter stream: requesting meters (0x21)...");
+            send_meter_request(&peripheral, &characteristic).await;
+
+            // 5 s of silence → re-request (device may have stopped pushing)
+            loop {
+                let notification =
+                    match tokio::time::timeout(Duration::from_secs(5), notifications.next()).await
+                    {
+                        Ok(Some(n)) => n,
+                        Ok(None) => break,
+                        Err(_) => {
+                            send_meter_request(&peripheral, &characteristic).await;
+                            continue;
+                        }
+                    };
+                if notification.value.is_empty() || notification.value[0] != METER_UPDATE_TYPE {
+                    continue;
+                }
+                // payload = [0x22][15 × f32 LE dB][u16 GR at +60]
+                let v = &notification.value;
+                let mut values = Vec::with_capacity(15);
+                for i in 0..15 {
+                    let off = 1 + i * 4;
+                    if off + 4 <= v.len() {
+                        values.push(f32::from_le_bytes([
+                            v[off],
+                            v[off + 1],
+                            v[off + 2],
+                            v[off + 3],
+                        ]));
+                    }
+                }
+                let _ = meter_tx.send(values);
+            }
+        });
+    });
+}
+
+async fn send_meter_request(peripheral: &Peripheral, characteristic: &Characteristic) {
+    // cap the ack wait; the request itself is delivered
+    let write = peripheral.write(
+        characteristic,
+        &METER_REQUEST_PACKET,
+        WriteType::WithoutResponse,
+    );
+    let _ = tokio::time::timeout(Duration::from_millis(1500), write).await;
 }
 
 /// Re-fetch the snapshot list from the device. Reuses the connect-time fetch flow

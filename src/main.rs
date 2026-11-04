@@ -159,12 +159,14 @@ fn start_ble_connection(controller: &mut FLOW8Controller) {
 
     let (status_tx, status_rx) = std::sync::mpsc::channel();
     let (snapshot_tx, snapshot_rx) = std::sync::mpsc::channel();
+    let (meter_tx, meter_rx) = std::sync::mpsc::channel();
     controller.ble_status_receiver = Some(status_rx);
     controller.snapshot_names_receiver = Some(snapshot_rx);
+    controller.meter_receiver = Some(meter_rx);
     controller.ble_status = ble::BleStatus::Scanning;
 
     let conn_arc = controller.ble_connection.clone();
-    std::thread::spawn(move || match ble::connect_flow8_ble(status_tx, snapshot_tx) {
+    std::thread::spawn(move || match ble::connect_flow8_ble(status_tx, snapshot_tx, meter_tx) {
         Ok(conn) => {
             log!("[BLE] Connection established. Sending dump trigger...");
             let trigger_result = ble::send_dump_trigger(&conn);
@@ -269,7 +271,13 @@ fn view(controller: &FLOW8Controller) -> Element<'_, InterfaceMessage> {
         Page::DeviceSelect => unreachable!(),
     };
 
-    column![nav, scrollable(page_content).height(Fill)]
+    // mixer fills the window exactly (no scrollbar); other pages scroll
+    let page = match controller.current_page {
+        Page::Mixer => page_content,
+        _ => scrollable(page_content).height(Fill).into(),
+    };
+
+    column![nav, page]
         .width(Fill)
         .height(Fill)
         .into()
@@ -453,10 +461,94 @@ fn update_interface(controller: &mut FLOW8Controller, message: InterfaceMessage)
                 send_cc(conn, 15, 1, if controller.fx_muted { 127 } else { 0 });
             }
         }
-        InterfaceMessage::TapTempo => {}
+        InterfaceMessage::TapTempo => {
+            let now = std::time::Instant::now();
+            // keep taps within 3 s of each other, at most 5 (official-app behavior)
+            controller
+                .tap_times
+                .retain(|t| now.duration_since(*t).as_secs_f32() < 3.0);
+            controller.tap_times.push(now);
+            if controller.tap_times.len() > 5 {
+                controller.tap_times.remove(0);
+            }
+            if let Some(bpm) = controller.current_tap_bpm() {
+                let conn_arc = controller.ble_connection.clone();
+                std::thread::spawn(move || {
+                    let Ok(guard) = conn_arc.lock() else {
+                        return;
+                    };
+                    if let Some(conn) = guard.as_ref() {
+                        if let Err(e) = ble::send_fx_tempo(conn, bpm) {
+                            log_warn!("[BLE] FX tempo failed: {}", e);
+                        } else {
+                            log!("[BLE] FX tempo set to {} BPM", bpm);
+                        }
+                    }
+                });
+            }
+        }
+
+        InterfaceMessage::DeleteSnapshot(slot) => {
+            let now = std::time::Instant::now();
+            let confirmed = controller
+                .delete_pending
+                .map(|(s, t)| s == slot && now.duration_since(t).as_millis() < 800)
+                .unwrap_or(false);
+            if !confirmed {
+                controller.delete_pending = Some((slot, now));
+                log!("[APP] Delete snapshot {}: click again to confirm", slot + 1);
+                return;
+            }
+            controller.delete_pending = None;
+            log!("[APP] Deleting snapshot {}", slot + 1);
+            if let Some(name) = controller.snapshot_names.get_mut(slot) {
+                *name = None;
+            }
+            let conn_arc = controller.ble_connection.clone();
+            let (snap_tx, snap_rx) = std::sync::mpsc::channel();
+            controller.snapshot_names_receiver = Some(snap_rx);
+            std::thread::spawn(move || {
+                let Ok(guard) = conn_arc.lock() else {
+                    return;
+                };
+                let Some(conn) = guard.as_ref() else {
+                    log_warn!("[BLE] Delete snapshot: not connected");
+                    return;
+                };
+                match ble::send_snapshot_delete(conn, slot as u8) {
+                    Ok(_) => log!("[BLE] Snapshot delete sent"),
+                    Err(e) => log_warn!("[BLE] Snapshot delete failed: {}", e),
+                }
+                let names = ble::refresh_snapshot_names(conn);
+                let _ = snap_tx.send(names);
+            });
+        }
+
+        InterfaceMessage::SetDeviceSetting(id, value) => {
+            controller.ble_settings[id as usize] = Some(value);
+            let conn_arc = controller.ble_connection.clone();
+            std::thread::spawn(move || {
+                let Ok(guard) = conn_arc.lock() else {
+                    return;
+                };
+                if let Some(conn) = guard.as_ref() {
+                    match ble::send_setting(conn, id, value) {
+                        Ok(_) => log!("[BLE] Setting {:02X} <- {:02X}", id, value),
+                        Err(e) => log_warn!("[BLE] Setting {:02X} failed: {}", id, e),
+                    }
+                }
+            });
+        }
 
         InterfaceMessage::Tick => {
             controller.tick_counter = controller.tick_counter.wrapping_add(1);
+
+            // clear the snapshot-delete confirm window
+            if let Some((_, t)) = controller.delete_pending {
+                if t.elapsed().as_millis() >= 800 {
+                    controller.delete_pending = None;
+                }
+            }
 
             let pending: Vec<Vec<u8>> = controller
                 .sysex_receiver
@@ -511,6 +603,40 @@ fn update_interface(controller: &mut FLOW8Controller, message: InterfaceMessage)
                 while let Ok(names) = snap_rx.try_recv() {
                     log!("[BLE] Received {} snapshot names", names.len());
                     controller.snapshot_names = names;
+                }
+            }
+
+            // VU meters: decay every tick, then take fresh values from the meter stream
+            for ch in &mut controller.channels {
+                ch.meter *= 0.90;
+            }
+            if let Some(ref meter_rx) = controller.meter_receiver {
+                while let Ok(values) = meter_rx.try_recv() {
+                    // floats 0-3 = inputs 1-4, 4/5 = input5 L/R, 6/7 = input6 L/R, 8/9 = BTUSB L/R
+                    for (i, ch) in controller.channels.iter_mut().enumerate() {
+                        let db = match i {
+                            0..=3 => values.get(i).copied(),
+                            4 => values.get(4).zip(values.get(5)).map(|(l, r)| l.max(*r)),
+                            5 => values.get(6).zip(values.get(7)).map(|(l, r)| l.max(*r)),
+                            _ => values.get(8).zip(values.get(9)).map(|(l, r)| l.max(*r)),
+                        };
+                        if let Some(db) = db {
+                            let linear = crate::service::ble::meter_db_to_linear(db);
+                            ch.meter = linear.max(ch.meter);
+                        }
+                    }
+                }
+            }
+
+            // clip latch: red dot above the fader for 2 s once the level hits 0 dBFS
+            for ch in &mut controller.channels {
+                if ch.meter >= 0.99
+                    && ch
+                        .clip_time
+                        .map(|t| t.elapsed().as_millis() > 2000)
+                        .unwrap_or(true)
+                {
+                    ch.clip_time = Some(std::time::Instant::now());
                 }
             }
 

@@ -49,6 +49,9 @@ pub enum InterfaceMessage {
     RenameChanged(String),
     RenameSubmit,
     RenameCancel,
+    DeleteSnapshot(usize),
+    /// Device setting write: id byte (0x01..=0x0f) and value byte
+    SetDeviceSetting(u8, u8),
 
     ThemeChanged(Theme),
     SyncIntervalChanged(SyncInterval),

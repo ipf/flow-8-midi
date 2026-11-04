@@ -34,7 +34,7 @@ pub fn view_fx(controller: &FLOW8Controller) -> Element<'_, InterfaceMessage> {
     let fx1_bus_col = build_fx_bus_fader(fx_buses.first().copied());
     let fx2_bus_col = build_fx_bus_fader(fx_buses.get(1).copied());
 
-    let tap_tempo = build_tap_tempo_btn();
+    let tap_tempo = build_tap_tempo_btn(controller.current_tap_bpm());
     let mute_btn = build_mute_btn(controller.fx_muted);
 
     let slots_row = row![
@@ -244,8 +244,12 @@ fn build_param2_toggle<'a>(
         .into()
 }
 
-fn build_tap_tempo_btn() -> Element<'static, InterfaceMessage> {
-    let tap_btn = button(text("FX 2 TAP TEMPO").size(12).center())
+fn build_tap_tempo_btn(bpm: Option<u16>) -> Element<'static, InterfaceMessage> {
+    let label = match bpm {
+        Some(b) => format!("TAP TEMPO · {} BPM", b),
+        None => "TAP TEMPO".to_string(),
+    };
+    let tap_btn = button(text(label).size(12).center())
         .on_press(InterfaceMessage::TapTempo)
         .padding([8, 20])
         .width(180)
@@ -253,7 +257,7 @@ fn build_tap_tempo_btn() -> Element<'static, InterfaceMessage> {
 
     tooltip(
         tap_btn,
-        container(text("Tap repeatedly to set FX2 tempo.\nOnly works with delay/echo presets (1-12).").size(10))
+        container(text("Tap repeatedly to set FX2 tempo (5-tap average).\nOnly works with delay/echo presets (1-12).").size(10))
             .padding(6)
             .style(container::rounded_box),
         tooltip::Position::Top,

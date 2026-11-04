@@ -4,19 +4,82 @@ use crate::model::{
     message::InterfaceMessage,
 };
 use crate::view::widgets::{
-    h_slider, sync_dot, sync_label, v_slider,
+    knob, sync_dot, sync_label, v_slider,
     format_gain, format_level, format_pan, format_comp, format_lowcut, format_limiter,
+    format_eq, format_send,
 };
 use iced::{
     widget::{
         button, column, container, row, text, text_input, tooltip, tooltip::Position,
         Column, Space,
     },
-    Center, Element, Fill, Length,
+    Center, Color, Element, Fill, Length,
 };
+use std::time::Instant;
 
-const FADER_HEIGHT: f32 = 280.0;
-const BUS_FADER_HEIGHT: f32 = 320.0;
+const FADER_HEIGHT: f32 = 150.0;
+const BUS_FADER_HEIGHT: f32 = 150.0;
+const METER_WIDTH: f32 = 9.0;
+const KNOB_SIZE: f32 = 34.0;
+const KNOB_SLOT_HEIGHT: f32 = 48.0;
+const EQ_KNOB_SIZE: f32 = 28.0;
+
+/// thin vertical VU bar, filled bottom-up; value is linear 0..1.
+/// Always visible: dark unlit track + colored lit portion.
+fn meter_bar(value: f32) -> Element<'static, InterfaceMessage> {
+    let value = value.clamp(0.0, 1.0);
+    let filled = (value * FADER_HEIGHT).max(if value > 0.0 { 2.0 } else { 0.0 });
+    let color = if value > 0.95 {
+        Color::from_rgb(0.9, 0.2, 0.2)
+    } else if value > 0.75 {
+        Color::from_rgb(0.95, 0.75, 0.1)
+    } else {
+        Color::from_rgb(0.2, 0.8, 0.3)
+    };
+    let track_style = |_: &iced::Theme| container::Style {
+        background: Some(Color::from_rgb(0.09, 0.09, 0.12).into()),
+        ..Default::default()
+    };
+    let mut col = Column::new().height(Length::Fixed(FADER_HEIGHT));
+    // unlit upper part
+    let top = FADER_HEIGHT - filled;
+    if top > 0.5 {
+        col = col.push(
+            container(Space::new())
+                .width(Length::Fixed(METER_WIDTH))
+                .height(Length::Fixed(top))
+                .style(track_style),
+        );
+    }
+    // lit lower part
+    if filled > 0.5 {
+        col = col.push(
+            container(Space::new())
+                .width(Length::Fixed(METER_WIDTH))
+                .height(Length::Fixed(filled))
+                .style(move |_| container::Style {
+                    background: Some(color.into()),
+                    ..Default::default()
+                }),
+        );
+    }
+    col.width(Length::Fixed(METER_WIDTH)).into()
+}
+
+/// clip light: red dot above the fader, latched for 2 s after hitting 0 dBFS
+fn clip_dot(clip_time: Option<Instant>) -> Element<'static, InterfaceMessage> {
+    let active = clip_time
+        .map(|t| t.elapsed().as_millis() < 2000)
+        .unwrap_or(false);
+    if active {
+        text("\u{25CF}")
+            .size(10)
+            .color(Color::from_rgb(0.95, 0.15, 0.15))
+            .into()
+    } else {
+        Space::new().height(Length::Fixed(12.0)).into()
+    }
+}
 
 pub fn view_mixer(controller: &FLOW8Controller) -> Element<'_, InterfaceMessage> {
     let channels_row: Vec<Element<InterfaceMessage>> = controller
@@ -28,23 +91,30 @@ pub fn view_mixer(controller: &FLOW8Controller) -> Element<'_, InterfaceMessage>
     let channels_section = container(
         iced::widget::Row::with_children(channels_row)
             .spacing(3)
-            .width(Fill),
+            .width(Fill)
+            .height(Fill),
     )
-    .width(Length::FillPortion(7));
+    .width(Length::FillPortion(7))
+    .height(Fill);
 
-    let bus_strips: Vec<Element<InterfaceMessage>> = controller
+    // Main fader rightmost: monitors first, then Main
+    let mut buses: Vec<&Bus> = controller
         .buses
         .iter()
         .filter(|b| b.bus_type != BusType::Fx)
-        .map(|b| build_bus_strip(b))
         .collect();
+    buses.sort_by_key(|b| b.bus_type == BusType::Main);
+    let bus_strips: Vec<Element<InterfaceMessage>> =
+        buses.into_iter().map(|b| build_bus_strip(b)).collect();
 
     let buses_section = container(
         iced::widget::Row::with_children(bus_strips)
             .spacing(3)
-            .width(Fill),
+            .width(Fill)
+            .height(Fill),
     )
-    .width(Length::FillPortion(3));
+    .width(Length::FillPortion(3))
+    .height(Fill);
 
     row![channels_section, Space::new().width(6), buses_section]
         .width(Fill)
@@ -55,7 +125,6 @@ pub fn view_mixer(controller: &FLOW8Controller) -> Element<'_, InterfaceMessage>
 
 const NAME_SLOT_HEIGHT: f32 = 16.0;
 const PHANTOM_SLOT_HEIGHT: f32 = 30.0;
-const H_SLIDER_SLOT_HEIGHT: f32 = 38.0;
 
 fn build_channel_strip<'a>(
     channel: &'a Channel,
@@ -63,6 +132,7 @@ fn build_channel_strip<'a>(
 ) -> Element<'a, InterfaceMessage> {
     let mut col = Column::new()
         .width(Fill)
+        .height(Fill)
         .align_x(Center)
         .spacing(6)
         .padding([10, 6]);
@@ -113,95 +183,161 @@ fn build_channel_strip<'a>(
     let strip = &channel.channel_strip;
     let ch_id = channel.id;
 
-    col = col.push(build_h_slider_slot(
-        channel.has_gain(),
-        "Gain",
-        strip.gain_synced,
+    // ── SSL-style strip: gain / EQ / dynamics / sends knobs above the fader ──
+    if channel.has_gain() {
+        col = col.push(knob_slot(
+            "Gain",
+            strip.gain_synced,
+            0..=127,
+            strip.gain,
+            64,
+            move |v| InterfaceMessage::Gain(ch_id, v),
+            format_gain(strip.gain),
+        ));
+    } else {
+        col = col.push(Space::new().height(Length::Fixed(KNOB_SLOT_HEIGHT)));
+    }
+
+    let eq = &channel.four_band_eq;
+    let eq_id = channel.id;
+    col = col.push(
+        row![
+            knob_slot("Low", eq.low_synced, 0..=127, eq.low, 64, move |v| {
+                InterfaceMessage::EqLow(eq_id, v)
+            }, format_eq(eq.low)),
+            knob_slot("LoMid", eq.low_mid_synced, 0..=127, eq.low_mid, 64, move |v| {
+                InterfaceMessage::EqLowMid(eq_id, v)
+            }, format_eq(eq.low_mid)),
+        ]
+        .spacing(4),
+    );
+    col = col.push(
+        row![
+            knob_slot("HiMid", eq.hi_mid_synced, 0..=127, eq.hi_mid, 64, move |v| {
+                InterfaceMessage::EqHiMid(eq_id, v)
+            }, format_eq(eq.hi_mid)),
+            knob_slot("High", eq.hi_synced, 0..=127, eq.hi, 64, move |v| {
+                InterfaceMessage::EqHi(eq_id, v)
+            }, format_eq(eq.hi)),
+        ]
+        .spacing(4),
+    );
+
+    if channel.has_low_cut() {
+        col = col.push(
+            row![
+                knob_slot("Cut", strip.low_cut_synced, 0..=127, strip.low_cut, 0, move |v| {
+                    InterfaceMessage::LowCut(ch_id, v)
+                }, format_lowcut(strip.low_cut)),
+                knob_slot("Comp", strip.compressor_synced, 0..=100, strip.compressor, 0, move |v| {
+                    InterfaceMessage::Compressor(ch_id, v)
+                }, format_comp(strip.compressor)),
+            ]
+            .spacing(4),
+        );
+    } else {
+        col = col.push(Space::new().height(Length::Fixed(KNOB_SLOT_HEIGHT)));
+    }
+
+    let sends = &channel.sends;
+    let send_id = channel.id;
+    col = col.push(
+        row![
+            knob_slot("Mon1", sends.mon1_synced, 0..=127, sends.mon1, 0, move |v| {
+                InterfaceMessage::SendMon1(send_id, v)
+            }, format_send(sends.mon1)),
+            knob_slot("Mon2", sends.mon2_synced, 0..=127, sends.mon2, 0, move |v| {
+                InterfaceMessage::SendMon2(send_id, v)
+            }, format_send(sends.mon2)),
+        ]
+        .spacing(4),
+    );
+    col = col.push(
+        row![
+            knob_slot("FX1", sends.fx1_synced, 0..=127, sends.fx1, 0, move |v| {
+                InterfaceMessage::SendFx1(send_id, v)
+            }, format_send(sends.fx1)),
+            knob_slot("FX2", sends.fx2_synced, 0..=127, sends.fx2, 0, move |v| {
+                InterfaceMessage::SendFx2(send_id, v)
+            }, format_send(sends.fx2)),
+        ]
+        .spacing(4),
+    );
+
+    col = col.push(knob_slot(
+        "Pan",
+        strip.balance_synced,
         0..=127,
-        strip.gain,
-        format_gain(strip.gain),
-        move |v| InterfaceMessage::Gain(ch_id, v),
+        strip.balance,
+        64,
+        move |v| InterfaceMessage::Balance(ch_id, v),
+        format_pan(strip.balance),
     ));
+
+    // bottom-anchor: faders of all strips line up
+    col = col.push(Space::new().height(Fill));
 
     col = col.push(
         column![
             sync_label("Level", 12.0, strip.level_synced),
-            v_slider(1..=127, strip.level, FADER_HEIGHT, move |v| {
-                InterfaceMessage::Level(ch_id, v)
-            }, format_level(strip.level)),
+            clip_dot(channel.clip_time),
+            row![
+                v_slider(1..=127, strip.level, FADER_HEIGHT, move |v| {
+                    InterfaceMessage::Level(ch_id, v)
+                }, format_level(strip.level)),
+                meter_bar(channel.meter),
+            ]
+            .align_y(iced::alignment::Vertical::Bottom)
+            .spacing(2),
             text(format_level(strip.level)).size(10),
         ]
         .align_x(Center)
-        .spacing(4),
+        .spacing(2),
     );
-
-    col = col.push(build_h_slider_slot(
-        true,
-        "Bal",
-        strip.balance_synced,
-        0..=127,
-        strip.balance,
-        format_pan(strip.balance),
-        move |v| InterfaceMessage::Balance(ch_id, v),
-    ));
-
-    col = col.push(build_h_slider_slot(
-        channel.has_compressor(),
-        "Comp",
-        strip.compressor_synced,
-        0..=100,
-        strip.compressor,
-        format_comp(strip.compressor),
-        move |v| InterfaceMessage::Compressor(ch_id, v),
-    ));
-
-    col = col.push(build_h_slider_slot(
-        channel.has_low_cut(),
-        "Low Cut",
-        strip.low_cut_synced,
-        0..=127,
-        strip.low_cut,
-        format_lowcut(strip.low_cut),
-        move |v| InterfaceMessage::LowCut(ch_id, v),
-    ));
 
     container(col)
         .style(container::rounded_box)
         .width(Fill)
+        .height(Fill)
         .padding(2)
         .into()
 }
 
-fn build_h_slider_slot<'a, F>(
-    enabled: bool,
+fn knob_slot<'a, F>(
     label: &'a str,
     is_synced: bool,
     range: std::ops::RangeInclusive<u8>,
     value: u8,
-    tip: String,
+    default: u8,
     on_change: F,
+    tip: String,
 ) -> Element<'a, InterfaceMessage>
 where
     F: Fn(u8) -> InterfaceMessage + 'a,
 {
-    let content: Element<'a, InterfaceMessage> = if enabled {
-        column![
-            sync_label(label, 12.0, is_synced),
-            h_slider(range, value, on_change, tip),
-        ]
-        .align_x(Center)
-        .spacing(2)
-        .width(Fill)
-        .padding([0, 6])
-        .into()
-    } else {
-        Space::new().into()
-    };
-    container(content)
-        .height(Length::Fixed(H_SLIDER_SLOT_HEIGHT))
-        .width(Fill)
-        .align_y(Center)
-        .into()
+    knob_slot_s(label, is_synced, range, value, default, KNOB_SIZE, on_change, tip)
+}
+
+fn knob_slot_s<'a, F>(
+    label: &'a str,
+    is_synced: bool,
+    range: std::ops::RangeInclusive<u8>,
+    value: u8,
+    default: u8,
+    size: f32,
+    on_change: F,
+    tip: String,
+) -> Element<'a, InterfaceMessage>
+where
+    F: Fn(u8) -> InterfaceMessage + 'a,
+{
+    column![
+        sync_label(label, 9.0, is_synced),
+        knob(range, value, default, size, on_change, tip),
+    ]
+    .align_x(Center)
+    .spacing(1)
+    .into()
 }
 
 fn build_phantom_slot(channel: &Channel) -> Element<'_, InterfaceMessage> {
@@ -303,6 +439,7 @@ fn add_mute_solo<'a>(
 fn build_bus_strip(bus: &Bus) -> Element<'_, InterfaceMessage> {
     let mut col = Column::new()
         .width(Fill)
+        .height(Fill)
         .align_x(Center)
         .spacing(6)
         .padding([10, 6]);
@@ -311,6 +448,69 @@ fn build_bus_strip(bus: &Bus) -> Element<'_, InterfaceMessage> {
     let bus_id = bus.id;
 
     col = col.push(text(bus.label()).size(14));
+
+    // 9-band EQ knobs (3×3 grid), same data as the EQ page
+    let eq = &bus.nine_band_eq;
+    let bands: [(&str, u8, u8); 9] = [
+        ("62", eq.freq_62_hz, 0),
+        ("125", eq.freq_125_hz, 1),
+        ("250", eq.freq_250_hz, 2),
+        ("500", eq.freq_500_hz, 3),
+        ("1k", eq.freq_1_khz, 4),
+        ("2k", eq.freq_2_khz, 5),
+        ("4k", eq.freq_4_khz, 6),
+        ("8k", eq.freq_8_khz, 7),
+        ("16k", eq.freq_16_khz, 8),
+    ];
+    for chunk in bands.chunks(3) {
+        let mut eq_row = row![].spacing(4);
+        for &(label, value, band_index) in chunk {
+            eq_row = eq_row.push(knob_slot_s(
+                label,
+                eq.bands_synced[band_index as usize],
+                0..=127,
+                value,
+                64,
+                EQ_KNOB_SIZE,
+                move |v| InterfaceMessage::BusNineBandEq(bus_idx, bus_id, band_index, v),
+                format_eq(value),
+            ));
+        }
+        col = col.push(eq_row);
+    }
+
+    // Pan (Main only; reserved slot on Mon) + Limiter (Main/Mon) as knobs,
+    // above the fader like the channel strips
+    let pan_slot: Element<InterfaceMessage> = if bus.has_balance() {
+        knob_slot(
+            "Pan",
+            bus.bus_strip.balance_synced,
+            0..=127,
+            bus.bus_strip.balance,
+            64,
+            move |v| InterfaceMessage::BusBalance(bus_idx, bus_id, v),
+            format_pan(bus.bus_strip.balance),
+        )
+    } else {
+        Space::new().height(Length::Fixed(KNOB_SLOT_HEIGHT)).into()
+    };
+    let limiter_slot: Element<InterfaceMessage> = if bus.has_limiter() {
+        knob_slot(
+            "Limiter",
+            bus.bus_strip.limiter_synced,
+            0..=127,
+            bus.bus_strip.limiter,
+            127,
+            move |v| InterfaceMessage::BusLimiter(bus_idx, bus_id, v),
+            format_limiter(bus.bus_strip.limiter),
+        )
+    } else {
+        Space::new().height(Length::Fixed(KNOB_SLOT_HEIGHT)).into()
+    };
+    col = col.push(row![pan_slot, limiter_slot].spacing(4));
+
+    // bottom-anchor: bus faders line up with the channel faders
+    col = col.push(Space::new().height(Fill));
 
     col = col.push(
         column![
@@ -321,50 +521,13 @@ fn build_bus_strip(bus: &Bus) -> Element<'_, InterfaceMessage> {
             text(format_level(bus.bus_strip.level)).size(10),
         ]
         .align_x(Center)
-        .spacing(4),
+        .spacing(2),
     );
-
-    let has_bal = bus.has_balance();
-    let bal_content: Element<'_, InterfaceMessage> = if has_bal {
-        column![
-            sync_label("Bal", 12.0, bus.bus_strip.balance_synced),
-            h_slider(0..=127, bus.bus_strip.balance, move |v| {
-                InterfaceMessage::BusBalance(bus_idx, bus_id, v)
-            }, format_pan(bus.bus_strip.balance)),
-        ]
-        .align_x(Center)
-        .spacing(2)
-        .width(Fill)
-        .padding([0, 6])
-        .into()
-    } else {
-        Space::new().into()
-    };
-    col = col.push(
-        container(bal_content)
-            .height(Length::Fixed(H_SLIDER_SLOT_HEIGHT))
-            .width(Fill)
-            .align_y(Center),
-    );
-
-    if bus.has_limiter() {
-        col = col.push(
-            column![
-                sync_label("Limiter", 12.0, bus.bus_strip.limiter_synced),
-                h_slider(0..=127, bus.bus_strip.limiter, move |v| {
-                    InterfaceMessage::BusLimiter(bus_idx, bus_id, v)
-                }, format_limiter(bus.bus_strip.limiter)),
-            ]
-            .align_x(Center)
-            .spacing(2)
-            .width(Fill)
-            .padding([0, 6]),
-        );
-    }
 
     container(col)
         .style(container::rounded_box)
         .width(Fill)
+        .height(Fill)
         .padding(2)
         .into()
 }

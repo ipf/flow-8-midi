@@ -68,6 +68,8 @@ pub struct Channel {
     pub channel_strip: BasicChannelStrip,
     pub four_band_eq: FourBandEQ,
     pub sends: ChannelSends,
+    pub meter: f32,
+    pub clip_time: Option<Instant>,
 }
 
 impl Default for Channel {
@@ -91,6 +93,8 @@ impl Default for Channel {
             channel_strip: BasicChannelStrip::default(),
             four_band_eq: FourBandEQ::default(),
             sends: ChannelSends::default(),
+            meter: 0.0,
+            clip_time: None,
         }
     }
 }

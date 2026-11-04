@@ -6,7 +6,7 @@ use crate::model::{
 #[cfg(any(debug_assertions, feature = "dev-tools"))]
 use crate::service::sysex_parser;
 use iced::{
-    widget::{button, column, container, pick_list, row, scrollable, text, Space},
+    widget::{button, column, container, pick_list, row, scrollable, text, tooltip, Space},
     Center, Element, Fill, Length, Theme,
 };
 
@@ -18,6 +18,7 @@ pub fn view_settings(controller: &FLOW8Controller) -> Element<'_, InterfaceMessa
     let title = text("Settings").size(18);
 
     let appearance_section = build_appearance_section(controller);
+    let device_section = build_device_section(controller);
     let manual_section = build_manual_section();
     let log_section = build_log_section(controller);
 
@@ -27,6 +28,8 @@ pub fn view_settings(controller: &FLOW8Controller) -> Element<'_, InterfaceMessa
         title,
         Space::new().height(12),
         about_section,
+        Space::new().height(16),
+        device_section,
         Space::new().height(16),
         appearance_section,
         Space::new().height(16),
@@ -46,6 +49,83 @@ pub fn view_settings(controller: &FLOW8Controller) -> Element<'_, InterfaceMessa
     content = content.push(Space::new().height(12));
 
     scrollable(content).height(Fill).into()
+}
+
+// ── FLOW 8 device settings (BLE op 0x25, ids from the official app) ──
+
+fn setting_row<'a>(
+    label: &'a str,
+    tip: &'a str,
+    id: u8,
+    options: &[(&'a str, u8)],
+    current: Option<u8>,
+) -> Element<'a, InterfaceMessage> {
+    let mut buttons = row![].spacing(4);
+    for &(name, value) in options {
+        let b = button(text(name).size(11))
+            .on_press(InterfaceMessage::SetDeviceSetting(id, value))
+            .padding([3, 8]);
+        buttons = buttons.push(if current == Some(value) {
+            b.style(button::primary)
+        } else {
+            b.style(button::secondary)
+        });
+    }
+    let content = tooltip(
+        column![text(label).size(12), Space::new().height(6), buttons].width(Fill),
+        container(text(tip).size(10))
+            .padding(6)
+            .style(container::rounded_box),
+        tooltip::Position::FollowCursor,
+    )
+    .gap(4);
+
+    container(content)
+        .width(Fill)
+        .padding([10, 12])
+        .style(container::rounded_box)
+        .into()
+}
+
+fn build_device_section(controller: &FLOW8Controller) -> Element<'_, InterfaceMessage> {
+    let cur = |id: u8| controller.ble_settings[id as usize];
+
+    // two cards per row, related settings side by side
+    let mut cards = vec![
+        setting_row("Footswitch", "Footswitch action (0x03).", 0x03, &[("FX mute", 0), ("Recall snapshot", 1)], cur(0x03)),
+        setting_row("Phones only", "Headphone-only mode (0x02).", 0x02, &[("Main + phones", 0), ("Phones only", 1)], cur(0x02)),
+        setting_row("Phones source", "Phones mirror MONITOR 1/2 (0x0c).", 0x0c, &[("Off", 0), ("On", 1)], cur(0x0c)),
+        setting_row("Phones post-fader", "Phones follow post-fader levels (0x0d).", 0x0d, &[("Off", 0), ("On", 1)], cur(0x0d)),
+        setting_row("USB streaming", "USB audio return channels (0x07).", 0x07, &[("2-channel", 0), ("4-channel", 1)], cur(0x07)),
+        setting_row("BT/USB source", "Bluetooth vs USB audio priority (0x01).", 0x01, &[("Audio source", 0), ("USB player", 1)], cur(0x01)),
+        setting_row("Mon 1/2 source", "What MONITOR 1/2 outputs (0x08).", 0x08, &[("Monitor buses", 0), ("USB 1/2", 1), ("USB 3/4", 2)], cur(0x08)),
+        setting_row("Mon link", "Stereo-link MONITOR 1/2 (0x0b).", 0x0b, &[("Unlinked", 0), ("Linked", 1)], cur(0x0b)),
+        setting_row("Ch 5/6 source", "Channel 5/6: line input vs USB 1/2 (0x09).", 0x09, &[("LINE", 0), ("USB", 1)], cur(0x09)),
+        setting_row("Ch 7/8 source", "Channel 7/8: line input vs USB 3/4 (0x0a).", 0x0a, &[("LINE", 0), ("USB", 1)], cur(0x0a)),
+        setting_row("Main pad", "-10 dBV pad on MAIN outputs (0x0e).", 0x0e, &[("Off", 0), ("-10 dBV", 1)], cur(0x0e)),
+        setting_row("Monitor pad", "-10 dBV pad on MONITOR outputs (0x0f).", 0x0f, &[("Off", 0), ("-10 dBV", 1)], cur(0x0f)),
+    ];
+    let mut grid = iced::widget::Column::new().spacing(8);
+    while !cards.is_empty() {
+        let pair: Vec<_> = cards.drain(..cards.len().min(2)).collect();
+        grid = grid.push(iced::widget::Row::with_children(pair).spacing(8));
+    }
+
+    container(
+        column![
+            text("FLOW 8 Device").size(14),
+            Space::new().height(8),
+            grid,
+            Space::new().height(6),
+            text("Click sends the setting over BLE. Highlighted = last value sent (not read back from device).")
+                .size(10),
+        ]
+        .padding([12, 14])
+        .width(Fill),
+    )
+    .style(container::rounded_box)
+    .width(Fill)
+    .into()
 }
 
 fn build_appearance_section(controller: &FLOW8Controller) -> Element<'_, InterfaceMessage> {

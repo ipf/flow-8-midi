@@ -78,7 +78,11 @@ pub fn view_snapshots(controller: &FLOW8Controller) -> Element<'_, InterfaceMess
                 .width(Fill)
                 .style(if has_name { button::primary } else { button::secondary });
 
-            // below the card: ✎ rename + Save, or the inline editor while editing
+            // below the card: ✎ rename + Save + Del, or the inline editor while editing
+            let delete_pending = controller
+                .delete_pending
+                .map(|(s, _)| s == i)
+                .unwrap_or(false);
             let below: Element<'_, InterfaceMessage> = if editing {
                 let editor_label: &str = if editing_save { "save as" } else { "rename" };
                 column![
@@ -113,6 +117,10 @@ pub fn view_snapshots(controller: &FLOW8Controller) -> Element<'_, InterfaceMess
                         .on_press(InterfaceMessage::SnapshotSaveStart(i))
                         .padding([2, 8])
                         .style(button::secondary),
+                    button(if delete_pending { text("\u{26A0}").size(11) } else { text("Del").size(10) })
+                        .on_press(InterfaceMessage::DeleteSnapshot(i))
+                        .padding([2, 8])
+                        .style(if delete_pending { button::danger } else { button::secondary }),
                 ]
                 .spacing(4)
                 .into()
