@@ -365,6 +365,32 @@ pub fn validate_sysex_dump(data: &[u8]) -> Option<SysExDump> {
 
 pub fn apply_dump_to_controller(dump: &SysExDump, controller: &mut FLOW8Controller) {
 
+    // diff against the previous dump: which raw byte offsets changed (used to
+    // locate device-setting bytes — toggle a setting, re-dump, read the diff)
+    if let Some(ref prev) = controller.last_sysex_dump {
+        if prev.len() == dump.raw.len() {
+            let changed: Vec<usize> = prev
+                .iter()
+                .zip(dump.raw.iter())
+                .enumerate()
+                .filter(|(_, (a, b))| a != b)
+                .map(|(i, _)| i)
+                .collect();
+            if !changed.is_empty() {
+                let detail: Vec<String> = changed
+                    .iter()
+                    .take(24)
+                    .map(|&i| format!("{:04X}: {:02X}->{:02X}", i, prev[i], dump.raw[i]))
+                    .collect();
+                log!(
+                    "[SYSEX] Dump diff ({} bytes changed): {}",
+                    changed.len(),
+                    detail.join("  ")
+                );
+            }
+        }
+    }
+
     controller.last_sysex_dump = Some(dump.raw.clone());
 
     #[cfg(any(debug_assertions, feature = "dev-tools"))]

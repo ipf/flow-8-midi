@@ -56,6 +56,7 @@ impl std::fmt::Display for BleStatus {
     }
 }
 
+#[derive(Clone)]
 pub struct BleConnection {
     pub peripheral: Peripheral,
     pub characteristic: Characteristic,
@@ -371,10 +372,54 @@ fn parse_snapshot_names(data: &[u8]) -> Vec<Option<String>> {
     names
 }
 
+const SETTING_READ_IDS: [u8; 12] = [
+    0x01, 0x02, 0x03, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F,
+];
+
+/// Probe GetSetting (0x26) for each known id while the notification stream is
+/// idle (between the state-dump drain and the snapshot request). The response
+/// shape is unverified — every notification is logged; values are parsed from
+/// the best-matching shapes so one device test settles it.
+async fn read_device_settings(
+    peripheral: &Peripheral,
+    characteristic: &Characteristic,
+    stream: &mut NotifyStream,
+) -> Vec<(u8, u8)> {
+    use tokio_stream::StreamExt;
+
+    log!("[BLE] Reading device settings (0x26)...");
+    let mut found: Vec<(u8, u8)> = Vec::new();
+    for &id in &SETTING_READ_IDS {
+        let packet = [0x26u8, id];
+        let write = peripheral.write(
+            characteristic,
+            &packet,
+            WriteType::WithoutResponse,
+        );
+        // cap the ack wait; without-response writes never complete on BlueZ
+        // but the packet is delivered
+        let _ = tokio::time::timeout(Duration::from_millis(300), write).await;
+        while let Ok(Some(n)) =
+            tokio::time::timeout(Duration::from_millis(120), stream.next()).await
+        {
+            let v = &n.value;
+            log_debug!("[BLE] Settings readback: {:02X?}", &v[..v.len().min(12)]);
+            if v.len() >= 3 && v[0] == 0x26 {
+                found.push((v[1], v[2]));
+            } else if v.len() == 2 && SETTING_READ_IDS.contains(&v[0]) {
+                found.push((v[0], v[1]));
+            }
+        }
+    }
+    log!("[BLE] Settings readback: {} values parsed", found.len());
+    found
+}
+
 async fn fetch_snapshot_names(
     peripheral: &Peripheral,
     characteristic: &Characteristic,
     meter_tx: Option<mpsc::Sender<Vec<f32>>>,
+    settings_tx: Option<mpsc::Sender<(u8, u8)>>,
     mut notification_stream: NotifyStream,
 ) -> Result<Vec<Option<String>>, String> {
     use tokio_stream::StreamExt;
@@ -405,6 +450,15 @@ async fn fetch_snapshot_names(
     match drain_result {
         Ok(n) => log!("[BLE] State dump received ({} chunks)", n),
         Err(_) => log_warn!("[BLE] State dump wait timed out, proceeding anyway"),
+    }
+
+    // one-shot settings readback while the stream is idle
+    if let Some(settings_tx) = settings_tx {
+        for (id, value) in
+            read_device_settings(peripheral, characteristic, &mut notification_stream).await
+        {
+            let _ = settings_tx.send((id, value));
+        }
     }
 
     tokio::time::sleep(Duration::from_millis(200)).await;
@@ -474,6 +528,7 @@ pub fn connect_flow8_ble(
     status_tx: mpsc::Sender<BleStatus>,
     snapshot_tx: mpsc::Sender<Vec<Option<String>>>,
     meter_tx: mpsc::Sender<Vec<f32>>,
+    settings_tx: mpsc::Sender<(u8, u8)>,
 ) -> Result<BleConnection, String> {
     let rt = tokio::runtime::Runtime::new().map_err(|e| format!("Tokio runtime error: {}", e))?;
 
@@ -503,6 +558,7 @@ pub fn connect_flow8_ble(
             &peripheral,
             &characteristic,
             Some(meter_tx),
+            Some(settings_tx),
             notification_stream,
         )
         .await
@@ -607,6 +663,12 @@ pub fn send_snapshot_save(conn: &BleConnection, slot: u8, name: &str) -> Result<
 /// Delete a device snapshot slot: SnapshotDelete (op 0x12), [slot].
 pub fn send_snapshot_delete(conn: &BleConnection, slot: u8) -> Result<(), String> {
     send_ble_command(conn, 0x12, &[slot])
+}
+
+/// Recall a snapshot over BLE: SnapshotLoad (op 0x20), [slot].
+/// Works even when the USB MIDI path (Program Change ch 16) is wedged.
+pub fn send_snapshot_load(conn: &BleConnection, slot: u8) -> Result<(), String> {
+    send_ble_command(conn, 0x20, &[slot])
 }
 
 /// FX tempo: official app computes a 5-tap rolling average, then sends op 0x40 [u16 bpm LE].
@@ -779,7 +841,7 @@ pub fn refresh_snapshot_names(conn: &BleConnection) -> Vec<Option<String>> {
                 return Vec::new();
             }
         };
-        match fetch_snapshot_names(&conn.peripheral, &conn.characteristic, None, stream).await {
+        match fetch_snapshot_names(&conn.peripheral, &conn.characteristic, None, None, stream).await {
             Ok(names) => names,
             Err(e) => {
                 log_warn!("[BLE] Snapshot refresh failed: {}", e);

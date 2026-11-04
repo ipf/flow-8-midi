@@ -5,7 +5,7 @@ use iced::{
     Center, Element, Fill,
 };
 
-const NAV_PAGES: [Page; 5] = [Page::Mixer, Page::Eq, Page::Sends, Page::Fx, Page::Snapshots];
+const NAV_PAGES: [Page; 4] = [Page::Mixer, Page::Eq, Page::Sends, Page::Fx];
 
 const SYNCED_COLOR: iced::Color = iced::Color {
     r: 0.2,

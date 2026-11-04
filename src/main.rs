@@ -9,7 +9,6 @@ use view::{
     device_select_page::view_device_select, eq_page::view_eq,
     fx_page::view_fx, mixer_page::view_mixer,
     nav_bar::view_nav_bar, sends_page::view_sends, settings_page::view_settings,
-    snapshots_page::view_snapshots,
 };
 use image::load_from_memory;
 use service::ble;
@@ -19,7 +18,12 @@ use service::midi::{
 };
 use service::midi_mapper::match_midi_command;
 use service::sysex_parser;
-use model::{flow8::FLOW8Controller, flow8::RenameTarget, message::InterfaceMessage, page::Page};
+use model::{
+    channels::BusType,
+    flow8::{FLOW8Controller, RenameTarget},
+    message::InterfaceMessage,
+    page::Page,
+};
 
 use iced::{
     widget::{column, scrollable},
@@ -160,26 +164,53 @@ fn start_ble_connection(controller: &mut FLOW8Controller) {
     let (status_tx, status_rx) = std::sync::mpsc::channel();
     let (snapshot_tx, snapshot_rx) = std::sync::mpsc::channel();
     let (meter_tx, meter_rx) = std::sync::mpsc::channel();
+    let (settings_tx, settings_rx) = std::sync::mpsc::channel();
     controller.ble_status_receiver = Some(status_rx);
     controller.snapshot_names_receiver = Some(snapshot_rx);
     controller.meter_receiver = Some(meter_rx);
+    controller.ble_settings_receiver = Some(settings_rx);
     controller.ble_status = ble::BleStatus::Scanning;
 
     let conn_arc = controller.ble_connection.clone();
-    std::thread::spawn(move || match ble::connect_flow8_ble(status_tx, snapshot_tx, meter_tx) {
+    std::thread::spawn(move || {
+        match ble::connect_flow8_ble(status_tx, snapshot_tx, meter_tx, settings_tx) {
         Ok(conn) => {
             log!("[BLE] Connection established. Sending dump trigger...");
             let trigger_result = ble::send_dump_trigger(&conn);
-            if let Ok(mut guard) = conn_arc.lock() {
-                *guard = Some(conn);
-            }
             match trigger_result {
                 Ok(_) => log!("[BLE] Initial dump trigger sent"),
                 Err(e) => log_error!("[BLE] Initial dump trigger failed: {}", e),
             }
+
+            if let Ok(mut guard) = conn_arc.lock() {
+                *guard = Some(conn.clone());
+            }
+
+            // EXPERIMENT: locate device-setting bytes in the SysEx dump.
+            // Toggle two settings over BLE (0x25) and re-dump; the diff
+            // logging in apply_dump_to_controller names the offsets. Values
+            // are restored (both expected to default to 0).
+            std::thread::spawn(move || {
+                use std::time::Duration;
+                std::thread::sleep(Duration::from_millis(2500)); // baseline dump first
+                let _ = ble::send_setting(&conn, 0x03, 1); // footswitch → snapshot
+                std::thread::sleep(Duration::from_millis(600));
+                let _ = ble::send_dump_trigger(&conn);
+                std::thread::sleep(Duration::from_millis(1200));
+                let _ = ble::send_setting(&conn, 0x03, 0); // restore
+                let _ = ble::send_setting(&conn, 0x0E, 1); // main pad on
+                std::thread::sleep(Duration::from_millis(600));
+                let _ = ble::send_dump_trigger(&conn);
+                std::thread::sleep(Duration::from_millis(1200));
+                let _ = ble::send_setting(&conn, 0x0E, 0); // restore
+                std::thread::sleep(Duration::from_millis(600));
+                let _ = ble::send_dump_trigger(&conn);
+                log!("[EXPERIMENT] settings diff sequence done");
+            });
         }
         Err(e) => {
             log_error!("[BLE] Connection failed: {}", e);
+        }
         }
     });
 }
@@ -266,7 +297,6 @@ fn view(controller: &FLOW8Controller) -> Element<'_, InterfaceMessage> {
         Page::Eq => view_eq(controller),
         Page::Sends => view_sends(controller),
         Page::Fx => view_fx(controller),
-        Page::Snapshots => view_snapshots(controller),
         Page::Settings => view_settings(controller),
         Page::DeviceSelect => unreachable!(),
     };
@@ -606,9 +636,20 @@ fn update_interface(controller: &mut FLOW8Controller, message: InterfaceMessage)
                 }
             }
 
+            // device settings read back at connect (0x26 probe)
+            if let Some(ref settings_rx) = controller.ble_settings_receiver {
+                while let Ok((id, value)) = settings_rx.try_recv() {
+                    log!("[BLE] Setting {:02X} read back: {:02X}", id, value);
+                    controller.ble_settings[id as usize] = Some(value);
+                }
+            }
+
             // VU meters: decay every tick, then take fresh values from the meter stream
             for ch in &mut controller.channels {
                 ch.meter *= 0.90;
+            }
+            for bus in &mut controller.buses {
+                bus.meter *= 0.90;
             }
             if let Some(ref meter_rx) = controller.meter_receiver {
                 while let Ok(values) = meter_rx.try_recv() {
@@ -623,6 +664,22 @@ fn update_interface(controller: &mut FLOW8Controller, message: InterfaceMessage)
                         if let Some(db) = db {
                             let linear = crate::service::ble::meter_db_to_linear(db);
                             ch.meter = linear.max(ch.meter);
+                        }
+                    }
+                    // floats 10/11 = Main L/R, 12 = Mon 1, 13 = Mon 2
+                    // (unverified — the 0x22 stream has never flowed yet)
+                    for bus in &mut controller.buses {
+                        let db = match (bus.bus_type, bus.index) {
+                            (BusType::Main, _) => {
+                                values.get(10).zip(values.get(11)).map(|(l, r)| l.max(*r))
+                            }
+                            (BusType::Monitor, 1) => values.get(12).copied(),
+                            (BusType::Monitor, 2) => values.get(13).copied(),
+                            _ => None,
+                        };
+                        if let Some(db) = db {
+                            let linear = crate::service::ble::meter_db_to_linear(db);
+                            bus.meter = linear.max(bus.meter);
                         }
                     }
                 }
@@ -704,6 +761,20 @@ fn update_interface(controller: &mut FLOW8Controller, message: InterfaceMessage)
             log!("[APP] Loading snapshot {}", n + 1);
             controller.mark_all_unsynced();
             controller.snapshot_resync_at = Some(std::time::Instant::now());
+            // recall over BLE (the MIDI Program Change goes out via the mapper;
+            // BLE works even when the USB MIDI path is wedged)
+            let conn_arc = controller.ble_connection.clone();
+            std::thread::spawn(move || {
+                let Ok(guard) = conn_arc.lock() else {
+                    return;
+                };
+                if let Some(conn) = guard.as_ref() {
+                    match ble::send_snapshot_load(conn, n) {
+                        Ok(_) => log!("[BLE] Snapshot load sent"),
+                        Err(e) => log_warn!("[BLE] Snapshot load failed: {}", e),
+                    }
+                }
+            });
         }
         InterfaceMessage::RenameStartChannel(ch_id) => {
             let name = controller

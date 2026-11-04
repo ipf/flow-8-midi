@@ -172,6 +172,8 @@ pub struct Bus {
     pub bus_type: BusType,
     pub bus_strip: BusStrip,
     pub nine_band_eq: NineBandEQ,
+    /// live output level (linear 0..1) from the meter stream
+    pub meter: f32,
 }
 
 impl Default for Bus {
@@ -182,6 +184,7 @@ impl Default for Bus {
             bus_type: BusType::Main,
             bus_strip: BusStrip::default(),
             nine_band_eq: NineBandEQ::default(),
+            meter: 0.0,
         }
     }
 }

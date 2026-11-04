@@ -3,6 +3,7 @@ use crate::model::{
     flow8::{FLOW8Controller, SyncInterval},
     message::InterfaceMessage,
 };
+use crate::view::snapshots_page::snapshots_section;
 #[cfg(any(debug_assertions, feature = "dev-tools"))]
 use crate::service::sysex_parser;
 use iced::{
@@ -30,6 +31,8 @@ pub fn view_settings(controller: &FLOW8Controller) -> Element<'_, InterfaceMessa
         about_section,
         Space::new().height(16),
         device_section,
+        Space::new().height(16),
+        snapshots_section(controller),
         Space::new().height(16),
         appearance_section,
         Space::new().height(16),
@@ -92,18 +95,18 @@ fn build_device_section(controller: &FLOW8Controller) -> Element<'_, InterfaceMe
 
     // two cards per row, related settings side by side
     let mut cards = vec![
-        setting_row("Footswitch", "Footswitch action (0x03).", 0x03, &[("FX mute", 0), ("Recall snapshot", 1)], cur(0x03)),
-        setting_row("Phones only", "Headphone-only mode (0x02).", 0x02, &[("Main + phones", 0), ("Phones only", 1)], cur(0x02)),
-        setting_row("Phones source", "Phones mirror MONITOR 1/2 (0x0c).", 0x0c, &[("Off", 0), ("On", 1)], cur(0x0c)),
-        setting_row("Phones post-fader", "Phones follow post-fader levels (0x0d).", 0x0d, &[("Off", 0), ("On", 1)], cur(0x0d)),
-        setting_row("USB streaming", "USB audio return channels (0x07).", 0x07, &[("2-channel", 0), ("4-channel", 1)], cur(0x07)),
-        setting_row("BT/USB source", "Bluetooth vs USB audio priority (0x01).", 0x01, &[("Audio source", 0), ("USB player", 1)], cur(0x01)),
-        setting_row("Mon 1/2 source", "What MONITOR 1/2 outputs (0x08).", 0x08, &[("Monitor buses", 0), ("USB 1/2", 1), ("USB 3/4", 2)], cur(0x08)),
-        setting_row("Mon link", "Stereo-link MONITOR 1/2 (0x0b).", 0x0b, &[("Unlinked", 0), ("Linked", 1)], cur(0x0b)),
-        setting_row("Ch 5/6 source", "Channel 5/6: line input vs USB 1/2 (0x09).", 0x09, &[("LINE", 0), ("USB", 1)], cur(0x09)),
-        setting_row("Ch 7/8 source", "Channel 7/8: line input vs USB 3/4 (0x0a).", 0x0a, &[("LINE", 0), ("USB", 1)], cur(0x0a)),
-        setting_row("Main pad", "-10 dBV pad on MAIN outputs (0x0e).", 0x0e, &[("Off", 0), ("-10 dBV", 1)], cur(0x0e)),
-        setting_row("Monitor pad", "-10 dBV pad on MONITOR outputs (0x0f).", 0x0f, &[("Off", 0), ("-10 dBV", 1)], cur(0x0f)),
+        setting_row("Footswitch", "What the connected footswitch does:\nFX mute = tap mutes the FX bus\nSnapshot = tap recalls the next snapshot", 0x03, &[("FX mute", 0), ("Recall snapshot", 1)], cur(0x03)),
+        setting_row("Phones only", "Mutes the MAIN outputs and plays\neverything only on the phones out.", 0x02, &[("Main + phones", 0), ("Phones only", 1)], cur(0x02)),
+        setting_row("Phones mix", "What the phones output plays:\nMain mix = the MAIN bus\nMon 1/2 mix = the MONITOR 1/2 bus mix", 0x0c, &[("Main mix", 0), ("Mon 1/2 mix", 1)], cur(0x0c)),
+        setting_row("Phones tap point", "Only affects the Mon 1/2 phones mix:\nPre-fader = before the Mon 1/2 fader\nPost-fader = after the Mon 1/2 fader", 0x0d, &[("Pre-fader", 0), ("Post-fader", 1)], cur(0x0d)),
+        setting_row("USB streaming", "How many channels the computer\nsends back to the mixer over USB\n(plays on Ch 5/6 and Ch 7/8).", 0x07, &[("2-channel", 0), ("4-channel", 1)], cur(0x07)),
+        setting_row("Ch 5/6 · 7/8 audio", "Which audio the BT/USB channel plays:\nBT audio = Bluetooth input\nUSB player = USB return playback", 0x01, &[("BT audio", 0), ("USB player", 1)], cur(0x01)),
+        setting_row("Mon 1/2 source", "What the MONITOR 1/2 outputs carry:\nMonitor buses = their own mix\nUSB 1/2 / USB 3/4 = computer audio", 0x08, &[("Monitor buses", 0), ("USB 1/2", 1), ("USB 3/4", 2)], cur(0x08)),
+        setting_row("Mon link", "Links MONITOR 1 and 2 into one\nstereo output (1 = L, 2 = R).", 0x0b, &[("Unlinked", 0), ("Linked", 1)], cur(0x0b)),
+        setting_row("Ch 5/6 source", "What input channel strip 5/6 gets:\nLINE = the physical line inputs\nUSB = computer USB return ch 1/2", 0x09, &[("LINE", 0), ("USB", 1)], cur(0x09)),
+        setting_row("Ch 7/8 source", "What input channel strip 7/8 gets:\nLINE = the physical line inputs\nUSB = computer USB return ch 3/4", 0x0a, &[("LINE", 0), ("USB", 1)], cur(0x0a)),
+        setting_row("Main pad", "Attenuates the MAIN XLR outputs\nby 10 dBV (for sensitive inputs).", 0x0e, &[("Off", 0), ("-10 dBV", 1)], cur(0x0e)),
+        setting_row("Monitor pad", "Attenuates the MONITOR outputs\nby 10 dBV (for sensitive inputs).", 0x0f, &[("Off", 0), ("-10 dBV", 1)], cur(0x0f)),
     ];
     let mut grid = iced::widget::Column::new().spacing(8);
     while !cards.is_empty() {

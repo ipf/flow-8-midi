@@ -6,7 +6,6 @@ use iced::{
     widget::{button, column, container, row, text, text_input, Space},
     Center, Element, Fill,
 };
-
 const GRID_COLS: usize = 4;
 
 const EMPTY_NUM_COLOR: iced::Color = iced::Color {
@@ -30,7 +29,9 @@ const AVAILABLE_NAME_COLOR: iced::Color = iced::Color {
     a: 1.0,
 };
 
-pub fn view_snapshots(controller: &FLOW8Controller) -> Element<'_, InterfaceMessage> {
+/// Snapshot cards live in the Settings page (no top-bar tab) — recall by
+/// clicking a card, save/rename/delete under each card.
+pub fn snapshots_section(controller: &FLOW8Controller) -> Element<'_, InterfaceMessage> {
     let mut rows: Vec<Element<'_, InterfaceMessage>> = Vec::new();
 
     for chunk_start in (0..SNAPSHOT_COUNT).step_by(GRID_COLS) {
@@ -109,17 +110,17 @@ pub fn view_snapshots(controller: &FLOW8Controller) -> Element<'_, InterfaceMess
                 .into()
             } else {
                 row![
-                    button(text("\u{270E}").size(11))
+                    button(text("Rename").size(10))
                         .on_press(InterfaceMessage::RenameStartSnapshot(i))
-                        .padding([2, 8])
+                        .padding([3, 10])
                         .style(button::secondary),
-                    button(text("Save").size(10))
+                    button(text("Save over").size(10))
                         .on_press(InterfaceMessage::SnapshotSaveStart(i))
-                        .padding([2, 8])
+                        .padding([3, 10])
                         .style(button::secondary),
-                    button(if delete_pending { text("\u{26A0}").size(11) } else { text("Del").size(10) })
+                    button(if delete_pending { text("\u{26A0} again!").size(10) } else { text("Delete").size(10) })
                         .on_press(InterfaceMessage::DeleteSnapshot(i))
-                        .padding([2, 8])
+                        .padding([3, 10])
                         .style(if delete_pending { button::danger } else { button::secondary }),
                 ]
                 .spacing(4)
@@ -158,21 +159,20 @@ pub fn view_snapshots(controller: &FLOW8Controller) -> Element<'_, InterfaceMess
     .width(Fill)
     .style(button::danger);
 
-    let content = column![
-        text("Mixer Snapshots").size(18),
-        Space::new().height(12),
-        grid,
-        Space::new().height(16),
-        reset_btn,
-    ]
-    .align_x(Center)
-    .spacing(4)
-    .padding(20)
-    .width(Fill);
-
-    container(content)
-        .width(Fill)
-        .height(Fill)
+    container(
+        column![
+            text("Snapshots").size(14),
+            Space::new().height(8),
+            grid,
+            Space::new().height(10),
+            reset_btn,
+        ]
         .align_x(Center)
-        .into()
+        .spacing(4)
+        .padding([12, 14])
+        .width(Fill),
+    )
+    .style(container::rounded_box)
+    .width(Fill)
+    .into()
 }

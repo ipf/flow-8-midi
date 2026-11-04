@@ -518,9 +518,14 @@ fn build_bus_strip(bus: &Bus) -> Element<'_, InterfaceMessage> {
             sync_label("Level", 12.0, bus.bus_strip.level_synced),
             // mirrors the channel strips' clip light slot so Level labels align
             Space::new().height(Length::Fixed(12.0)),
-            v_slider(1..=127, bus.bus_strip.level, BUS_FADER_HEIGHT, move |v| {
-                InterfaceMessage::BusLevel(bus_idx, bus_id, v)
-            }, format_level(bus.bus_strip.level)),
+            row![
+                v_slider(1..=127, bus.bus_strip.level, BUS_FADER_HEIGHT, move |v| {
+                    InterfaceMessage::BusLevel(bus_idx, bus_id, v)
+                }, format_level(bus.bus_strip.level)),
+                meter_bar(bus.meter),
+            ]
+            .align_y(iced::alignment::Vertical::Bottom)
+            .spacing(2),
             text(format_level(bus.bus_strip.level)).size(10),
         ]
         .align_x(Center)
