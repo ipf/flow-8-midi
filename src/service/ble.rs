@@ -610,26 +610,74 @@ const CMD_SNAPSHOT_SAVE: u8 = 0x19; // [slot][name]
 const CMD_SNAPSHOT_RENAME: u8 = 0x32; // [slot][name]
 const CHANNEL_NAME_MAX: usize = 8; // panel labels are 8 chars
 
+/// One GATT write, capped: this device never completes the D-Bus WriteValue
+/// call — the packet is on air in ~250 ms regardless.
+async fn write_packet(peripheral: &Peripheral, characteristic: &Characteristic, packet: &[u8], opcode: u8) {
+    let write = peripheral.write(characteristic, packet, WriteType::WithoutResponse);
+    match tokio::time::timeout(Duration::from_millis(300), write).await {
+        Ok(Ok(_)) => {}
+        Ok(Err(e)) => log_debug!("[BLE] cmd 0x{:02X} write error: {}", opcode, e),
+        Err(_) => {}
+    }
+}
+
+/// Compact commands (0x05 rename, 0x07 names, 0x12/0x20 snapshot, 0x19/0x32
+/// save/rename, 0x25 setting, 0x40 tempo): fields live at struct[1..],
+/// so the bare form is just [opcode][fields].
 pub fn send_ble_command(conn: &BleConnection, opcode: u8, payload: &[u8]) -> Result<(), String> {
     let rt = tokio::runtime::Runtime::new().map_err(|e| format!("Tokio runtime error: {}", e))?;
     rt.block_on(async {
         let mut packet = Vec::with_capacity(payload.len() + 1);
         packet.push(opcode);
         packet.extend_from_slice(payload);
-        let write = conn.peripheral.write(
-            &conn.characteristic,
-            &packet,
-            // device answers via notifications/USB, not with a write response
-            WriteType::WithoutResponse,
-        );
-        // device never completes the D-Bus WriteValue call; cap the ack wait —
-        // the packet itself is delivered (verify via panel/dump)
-        match tokio::time::timeout(Duration::from_millis(1500), write).await {
-            Ok(Ok(_)) => Ok(()),
-            Ok(Err(e)) => Err(format!("BLE command 0x{:02X} failed: {}", opcode, e)),
-            Err(_) => Ok(()),
-        }
+        write_packet(&conn.peripheral, &conn.characteristic, &packet, opcode).await;
+        Ok(())
     })
+}
+
+/// Struct commands (0x11 FX setup, 0x17 input preset, 0x21 meter request,
+/// 0x31 FX preset, 0x41 select output) read their fields at struct[24..]:
+/// the compact bare form is silently dropped (data lands at struct[1]).
+/// Send the padded bare form AND the official chunked form
+/// ([len u16][type][idx][count][seq] + ≤32-byte slices of the same fields).
+pub fn send_ble_struct_command(conn: &BleConnection, opcode: u8, payload: &[u8]) -> Result<(), String> {
+    let rt = tokio::runtime::Runtime::new().map_err(|e| format!("Tokio runtime error: {}", e))?;
+    rt.block_on(async {
+        write_struct_command(&conn.peripheral, &conn.characteristic, opcode, payload).await;
+        Ok(())
+    })
+}
+
+async fn write_struct_command(peripheral: &Peripheral, characteristic: &Characteristic, opcode: u8, payload: &[u8]) {
+    static SEQ: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+    // bare struct form: [type] + 23 zeros + fields
+    let mut bare = vec![0u8; 24 + payload.len()];
+    bare[0] = opcode;
+    bare[24..].copy_from_slice(payload);
+    write_packet(peripheral, characteristic, &bare, opcode).await;
+
+    // chunked form: fields = struct bytes 1.. (the zero pad included)
+    let mut fields = vec![0u8; 23 + payload.len()];
+    fields[23..].copy_from_slice(payload);
+    const CHUNK: usize = 32;
+    let count = fields.len().div_ceil(CHUNK);
+    let seq = if count > 1 {
+        SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    } else {
+        0 // single-chunk commands always carry seq 0 (native lib @0xec5c4)
+    };
+    for (idx, chunk) in fields.chunks(CHUNK).enumerate() {
+        let mut p = Vec::with_capacity(chunk.len() + 7);
+        p.push(chunk.len() as u8);
+        p.push(0);
+        p.push(opcode);
+        p.push(idx as u8);
+        p.push(count as u8);
+        p.push(seq);
+        p.extend_from_slice(chunk);
+        write_packet(peripheral, characteristic, &p, opcode).await;
+    }
 }
 
 /// Rename a channel: ChannelLabel (op 0x05), [uid][icon u16 = 0][ascii name].
@@ -693,17 +741,18 @@ pub fn send_input_preset(
     ch_id: u8,
     preset: &crate::model::presets::InputPreset,
 ) -> Result<(), String> {
-    let mut payload = vec![0u8; 23 + 100];
-    payload[23] = ch_id; // cmd[24]
-    payload[24] = 0x01; // state+1: stereo flag (official presets set 1)
-                        // state+2/+3 (mute, phase) stay 0
-    payload[27] = preset.phantom as u8; // state+4
-    payload[23 + 12..23 + 16].copy_from_slice(&(preset.gain_db as f32).to_le_bytes());
-    payload[23 + 20..23 + 22].copy_from_slice(&preset.hpf_hz.to_le_bytes());
+    // fields only — send_ble_struct_command prepends the 23-zero struct pad
+    let mut state = vec![0u8; 100];
+    state[0] = ch_id;
+    state[1] = 0x01; // stereo flag (official presets set 1)
+                     // state+2/+3 (mute, phase) stay 0
+    state[4] = preset.phantom as u8;
+    state[12..16].copy_from_slice(&(preset.gain_db as f32).to_le_bytes());
+    state[20..22].copy_from_slice(&preset.hpf_hz.to_le_bytes());
     // pan f32 at state+24 stays 0.0 (center); sends f32s at state+28..44 = 0
     let label: Vec<u8> = preset.name.bytes().take(20).collect(); // %.20s
-    payload[23 + 72..23 + 72 + label.len()].copy_from_slice(&label);
-    send_ble_command(conn, 0x17, &payload)
+    state[72..72 + label.len()].copy_from_slice(&label);
+    send_ble_struct_command(conn, 0x17, &state)
 }
 
 /// FX setup block: FxSetup (op 0x11). Official layout (setFxSetup @0xaf270 +
@@ -721,32 +770,23 @@ pub fn send_fx_setup(
     to_mon1: bool,
     to_mon2: bool,
 ) -> Result<(), String> {
-    let mut payload = vec![0u8; 30];
-    payload[23] = fx_id; // cmd[24]
-    payload[24] = p1;
-    payload[25] = p2;
-    payload[26] = p3;
-    payload[27] = to_main as u8; // cmd[28]
-    payload[28] = to_mon1 as u8;
-    payload[29] = to_mon2 as u8;
-    send_ble_command(conn, 0x11, &payload)
+    let payload = [
+        fx_id, p1, p2, p3,
+        to_main as u8,
+        to_mon1 as u8,
+        to_mon2 as u8,
+    ]; // fields land at cmd[24..30] — the writer prepends the struct pad
+    send_ble_struct_command(conn, 0x11, &payload)
 }
 
 /// FX preset load: FXLoadPreset (op 0x31). queueFXLoadPresetCommandPackets
 /// @0x7abec: cmd[24]=fx_ch_id, cmd[25]=preset (1-based — the dump reports
 /// preset_raw 1..=16). `preset` here is the 1-based wire value.
 pub fn send_fx_preset(conn: &BleConnection, fx_id: u8, preset: u8) -> Result<(), String> {
-    let mut payload = vec![0u8; 25];
-    payload[23] = fx_id; // cmd[24]
-    payload[24] = preset; // cmd[25]
-    send_ble_command(conn, 0x31, &payload)
+    send_ble_struct_command(conn, 0x31, &[fx_id, preset])
 }
 
 // ── VU meters: MeterRequest (0x21); device streams MeterUpdate (0x22) ──
-// Official layout (setMeterOutputChannelId @0xb1564 in the native lib):
-// count byte + 10 channel ids copied from METER_REQUEST_CHANNELS
-// (40 41 42 43 C4 C5 C6 8F + 2 zero pad); the app's wire serializer moves
-// the type byte into the 6-byte chunk header, so the payload has NO type.
 const METER_UPDATE_TYPE: u8 = 0x22;
 // setMeterOutputChannelId @0xb1564: cmd[24]=count(8), cmd[25..31] = input ids
 // (id|0x40 mono, |0xC0 stereo), cmd[32] = the SELECTED output (id|0xC0) — the
@@ -868,40 +908,31 @@ pub fn start_meter_loop(
     });
 }
 
-async fn write_ble_raw(
-    peripheral: &Peripheral,
-    characteristic: &Characteristic,
-    packet: &[u8],
-    what: &str,
-) {
-    let write = peripheral.write(characteristic, packet, WriteType::WithoutResponse);
-    match tokio::time::timeout(Duration::from_millis(1500), write).await {
-        Ok(Ok(_)) => {}
-        Ok(Err(e)) => log_debug!("[BLE] {} write error: {}", what, e),
-        Err(_) => log_debug!("[BLE] {}: no ack (packet still delivered)", what),
-    }
-}
-
 async fn send_meter_request(peripheral: &Peripheral, characteristic: &Characteristic, rotation: usize) {
     let out_id = 7 + (rotation % METER_OUTPUT_BYTES.len()) as u8;
     let out_byte = METER_OUTPUT_BYTES[rotation % METER_OUTPUT_BYTES.len()];
-    // select the output on the device, then request meters for the 7 inputs
-    // plus that output; the device only streams one output pair at a time
-    write_ble_raw(peripheral, characteristic, &[0x41, out_id], "Select output").await;
-    let mut payload = Vec::with_capacity(11);
-    payload.push(0x08); // meter channel count (7 inputs + 1 output)
-    payload.extend_from_slice(&METER_INPUT_IDS);
-    payload.push(out_byte);
-    payload.extend_from_slice(&[0x00, 0x00]);
-    let mut packet = vec![0x21u8];
-    packet.extend_from_slice(&payload);
-    log_debug!(
-        "[BLE] Meter request: output {} (byte 0x{:02X}), {} bytes",
-        out_id,
+    // select the output on the device (0x41, field = output id), then request
+    // meters for the 7 inputs plus that output; the device only streams one
+    // output pair at a time. Fields only — write_struct_command places them
+    // at struct[24..].
+    write_struct_command(peripheral, characteristic, 0x41, &[out_id]).await;
+    let fields = [
+        0x08u8, // meter channel count (7 inputs + 1 output)
+        METER_INPUT_IDS[0],
+        METER_INPUT_IDS[1],
+        METER_INPUT_IDS[2],
+        METER_INPUT_IDS[3],
+        METER_INPUT_IDS[4],
+        METER_INPUT_IDS[5],
+        METER_INPUT_IDS[6],
         out_byte,
-        packet.len()
+    ];
+    log_debug!(
+        "[BLE] Meter request: output {} (byte 0x{:02X})",
+        out_id,
+        out_byte
     );
-    write_ble_raw(peripheral, characteristic, &packet, "Meter request").await;
+    write_struct_command(peripheral, characteristic, 0x21, &fields).await;
 }
 
 /// Re-fetch the snapshot list from the device. One-shot: opens its own
