@@ -3,9 +3,9 @@ use crate::model::{
     flow8::FLOW8Controller,
     message::InterfaceMessage,
 };
-use crate::view::widgets::{sync_label, v_slider, h_slider, format_level, format_percent, UNSYNCED_COLOR};
+use crate::view::widgets::{sync_label, v_slider, format_level, format_percent, UNSYNCED_COLOR};
 use iced::{
-    widget::{button, checkbox, column, container, row, text, tooltip, Column, Row, Space},
+    widget::{button, checkbox, column, container, row, slider, text, tooltip, Column, Row, Space},
     Center, Element, Fill,
 };
 
@@ -72,9 +72,17 @@ fn build_fx_slot_column(fx: &FxSlot) -> Element<'_, InterfaceMessage> {
 
     let param1_row = row![
         sync_label(info.param1_label, 12.0, fx.param1_synced).width(80),
-        h_slider(0..=100, fx.param1, move |v| {
-            InterfaceMessage::FxParam1(fx_id, v)
-        }, format_percent(fx.param1)),
+        tooltip(
+            slider(0..=100, fx.param1, move |v| InterfaceMessage::FxParam1(fx_id, v))
+                .width(Fill)
+                // model updates per drag frame; send the settled value once on release
+                .on_release(InterfaceMessage::FxParam1Send(fx_id)),
+            container(text(format_percent(fx.param1)).size(10))
+                .padding(4)
+                .style(container::rounded_box),
+            tooltip::Position::Top,
+        )
+        .gap(4),
     ]
     .align_y(Center)
     .spacing(8)
@@ -257,7 +265,7 @@ fn build_param2_toggle<'a>(
             })
     } else {
         button(text(on_label).size(12).center())
-            .on_press(InterfaceMessage::FxParam2(fx_id, 127))
+            .on_press(InterfaceMessage::FxParam2(fx_id, 100))
             .padding([8, 12])
             .width(Fill)
             .style(button::secondary)

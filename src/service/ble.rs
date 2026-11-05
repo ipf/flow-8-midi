@@ -706,10 +706,12 @@ pub fn send_input_preset(
     send_ble_command(conn, 0x17, &payload)
 }
 
-/// FX output routing: FxSetup (op 0x11). Official layout (setFxSetup @0xaf270 +
+/// FX setup block: FxSetup (op 0x11). Official layout (setFxSetup @0xaf270 +
 /// updateFXOutputRouting @0xb9c34): cmd[24]=fx_ch_id, cmd[25..27] = the FX
 /// channel's first/second/third param values, cmd[28..30] = route Main/Mon1/Mon2.
-pub fn send_fx_routing(
+/// Used for routing checkboxes AND param sends (updateFXPresetValue builds the
+/// same block for a single param change).
+pub fn send_fx_setup(
     conn: &BleConnection,
     fx_id: u8,
     p1: u8,
@@ -728,6 +730,16 @@ pub fn send_fx_routing(
     payload[28] = to_mon1 as u8;
     payload[29] = to_mon2 as u8;
     send_ble_command(conn, 0x11, &payload)
+}
+
+/// FX preset load: FXLoadPreset (op 0x31). queueFXLoadPresetCommandPackets
+/// @0x7abec: cmd[24]=fx_ch_id, cmd[25]=preset (1-based — the dump reports
+/// preset_raw 1..=16). `preset` here is the 1-based wire value.
+pub fn send_fx_preset(conn: &BleConnection, fx_id: u8, preset: u8) -> Result<(), String> {
+    let mut payload = vec![0u8; 25];
+    payload[23] = fx_id; // cmd[24]
+    payload[24] = preset; // cmd[25]
+    send_ble_command(conn, 0x31, &payload)
 }
 
 // ── VU meters: MeterRequest (0x21); device streams MeterUpdate (0x22) ──

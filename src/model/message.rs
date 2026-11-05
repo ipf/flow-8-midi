@@ -39,6 +39,8 @@ pub enum InterfaceMessage {
     FxPreset(FxSlotId, u8),
     FxParam1(FxSlotId, u8),
     FxParam2(FxSlotId, u8),
+    /// slider release: send the settled FX params (0x11) once
+    FxParam1Send(FxSlotId),
     FxRouting(FxSlotId, bool, bool, bool),
     FxMute,
     TapTempo,
