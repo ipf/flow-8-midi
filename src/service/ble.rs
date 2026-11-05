@@ -651,16 +651,22 @@ pub fn send_ble_struct_command(conn: &BleConnection, opcode: u8, payload: &[u8])
 async fn write_struct_command(peripheral: &Peripheral, characteristic: &Characteristic, opcode: u8, payload: &[u8]) {
     static SEQ: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
 
-    // bare struct form: [type] + 23 zeros + fields
-    let mut bare = vec![0u8; 24 + payload.len()];
-    bare[0] = opcode;
-    bare[24..].copy_from_slice(payload);
-    write_packet(peripheral, characteristic, &bare, opcode).await;
+    // bare struct form fits in a default-MTU (23) write → send it; anything
+    // larger is truncated by BlueZ and must go chunked only
+    if 24 + payload.len() <= 20 {
+        let mut bare = vec![0u8; 24 + payload.len()];
+        bare[0] = opcode;
+        bare[24..].copy_from_slice(payload);
+        write_packet(peripheral, characteristic, &bare, opcode).await;
+    }
 
     // chunked form: fields = struct bytes 1.. (the zero pad included)
     let mut fields = vec![0u8; 23 + payload.len()];
     fields[23..].copy_from_slice(payload);
-    const CHUNK: usize = 32;
+    // 17 data bytes + 6-byte header = 23 = smallest MTU — BlueZ silently
+    // truncates write-without-response beyond MTU-3 (every command that
+    // ever worked was ≤20 bytes; every struct command was 33+ and died)
+    const CHUNK: usize = 17;
     let count = fields.len().div_ceil(CHUNK);
     let seq = if count > 1 {
         SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
