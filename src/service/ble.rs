@@ -833,18 +833,57 @@ pub fn meter_db_to_linear(db: f32) -> f32 {
 /// existing connection (device already connected by the main session — BlueZ
 /// shares it, no re-pairing).
 async fn ride_along_meter_stream() -> Option<(Peripheral, Characteristic, NotifyStream)> {
-    let manager = Manager::new().await.ok()?;
-    let adapter = manager.adapters().await.ok()?.into_iter().next()?;
-    let peripheral = scan_for_flow8(&adapter).await.ok()?;
-    peripheral.discover_services().await.ok()?;
+    let manager = match Manager::new().await {
+        Ok(m) => m,
+        Err(e) => {
+            log_warn!("[BLE] Ride-along: manager failed: {}", e);
+            return None;
+        }
+    };
+    let adapter = match manager.adapters().await.ok()?.into_iter().next() {
+        Some(a) => a,
+        None => {
+            log_warn!("[BLE] Ride-along: no adapter");
+            return None;
+        }
+    };
+    let peripheral = match scan_for_flow8(&adapter).await {
+        Ok(p) => p,
+        Err(e) => {
+            log_warn!("[BLE] Ride-along: scan failed: {}", e);
+            return None;
+        }
+    };
+    if let Err(e) = peripheral.discover_services().await {
+        log_warn!("[BLE] Ride-along: discover failed: {}", e);
+        return None;
+    }
     let target = characteristic_uuid();
-    let characteristic = peripheral
+    let characteristic = match peripheral
         .characteristics()
         .into_iter()
-        .find(|c| c.uuid == target)?;
-    peripheral.subscribe(&characteristic).await.ok()?;
-    let stream = peripheral.notifications().await.ok()?;
-    Some((peripheral, characteristic, stream))
+        .find(|c| c.uuid == target)
+    {
+        Some(c) => c,
+        None => {
+            log_warn!("[BLE] Ride-along: characteristic not found");
+            return None;
+        }
+    };
+    if let Err(e) = peripheral.subscribe(&characteristic).await {
+        log_warn!("[BLE] Ride-along: subscribe failed: {}", e);
+        return None;
+    }
+    match peripheral.notifications().await {
+        Ok(s) => {
+            log!("[BLE] Ride-along: stream established");
+            Some((peripheral, characteristic, s))
+        }
+        Err(e) => {
+            log_warn!("[BLE] Ride-along: notifications failed: {}", e);
+            None
+        }
+    }
 }
 
 pub fn start_meter_loop(meter_tx: mpsc::Sender<(Vec<f32>, usize)>) {
@@ -856,11 +895,14 @@ pub fn start_meter_loop(meter_tx: mpsc::Sender<(Vec<f32>, usize)>) {
         rt.block_on(async move {
             use tokio_stream::StreamExt;
 
-            let Some((peripheral, characteristic, mut notifications)) =
-                ride_along_meter_stream().await
-            else {
-                log_warn!("[BLE] Meter loop: ride-along session failed — no meters");
-                return;
+            let (peripheral, characteristic, mut notifications) = loop {
+                match ride_along_meter_stream().await {
+                    Some(x) => break x,
+                    None => {
+                        log_warn!("[BLE] Meter loop: ride-along failed, retrying in 10 s");
+                        tokio::time::sleep(Duration::from_secs(10)).await;
+                    }
+                }
             };
             let mut first_data = true;
             let mut other_logged = 0u32;
