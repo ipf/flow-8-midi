@@ -490,16 +490,12 @@ async fn fetch_snapshot_names(
     })
     .await;
 
-    // the subscription stays alive for the session: hand the open notification
-    // stream to the meter loop (a second subscribe()/notifications() call
-    // stalls on BlueZ, so it must reuse this one)
+    // the meter loop uses its OWN ride-along BlueZ session (the main
+    // session's notification stream starves after the names flow — a second
+    // session subscribing the same characteristic receives reliably and the
+    // CCCD is per-connection, so no re-pairing is needed)
     if let Some(meter_tx) = meter_tx {
-        start_meter_loop(
-            peripheral.clone(),
-            characteristic.clone(),
-            notification_stream,
-            meter_tx,
-        );
+        start_meter_loop(meter_tx);
     }
 
     // keep the subscription alive for the session (the meter stream shares it)
@@ -830,12 +826,28 @@ pub fn meter_db_to_linear(db: f32) -> f32 {
 /// call stalls on BlueZ). Sends MeterRequest (0x21), then parses
 /// MeterUpdate (0x22) notifications into 15 raw dB floats; re-requests
 /// after 5 s of silence.
-pub fn start_meter_loop(
-    peripheral: Peripheral,
-    characteristic: Characteristic,
-    notifications: NotifyStream,
-    meter_tx: mpsc::Sender<(Vec<f32>, usize)>,
-) {
+/// Run the meter receive loop on its own thread. Opens a fresh ride-along
+/// BlueZ session (see call site) subscribed to the same characteristic,
+/// sends MeterRequest (0x21) and parses MeterUpdate (0x22) notifications.
+/// Fresh BlueZ session subscribed to the same characteristic. Rides on the
+/// existing connection (device already connected by the main session — BlueZ
+/// shares it, no re-pairing).
+async fn ride_along_meter_stream() -> Option<(Peripheral, Characteristic, NotifyStream)> {
+    let manager = Manager::new().await.ok()?;
+    let adapter = manager.adapters().await.ok()?.into_iter().next()?;
+    let peripheral = scan_for_flow8(&adapter).await.ok()?;
+    peripheral.discover_services().await.ok()?;
+    let target = characteristic_uuid();
+    let characteristic = peripheral
+        .characteristics()
+        .into_iter()
+        .find(|c| c.uuid == target)?;
+    peripheral.subscribe(&characteristic).await.ok()?;
+    let stream = peripheral.notifications().await.ok()?;
+    Some((peripheral, characteristic, stream))
+}
+
+pub fn start_meter_loop(meter_tx: mpsc::Sender<(Vec<f32>, usize)>) {
     std::thread::spawn(move || {
         let rt = match tokio::runtime::Runtime::new() {
             Ok(rt) => rt,
@@ -844,11 +856,16 @@ pub fn start_meter_loop(
         rt.block_on(async move {
             use tokio_stream::StreamExt;
 
-            let mut notifications = notifications;
+            let Some((peripheral, characteristic, mut notifications)) =
+                ride_along_meter_stream().await
+            else {
+                log_warn!("[BLE] Meter loop: ride-along session failed — no meters");
+                return;
+            };
             let mut first_data = true;
             let mut other_logged = 0u32;
             let mut rotation = 0usize;
-            log!("[BLE] Meter loop running (shared notification stream)");
+            log!("[BLE] Meter loop running (ride-along stream)");
             send_meter_request(&peripheral, &characteristic, rotation).await;
             let mut last_sent = std::time::Instant::now();
 
@@ -868,12 +885,19 @@ pub fn start_meter_loop(
                     if notification.value.is_empty()
                         || notification.value[0] != METER_UPDATE_TYPE
                     {
-                        if other_logged < 3 {
+                        // hex-log the first few unknowns: the real meter update
+                        // format reveals itself here on first flow
+                        if other_logged < 8 {
                             other_logged += 1;
+                            let hex: Vec<String> = notification
+                                .value
+                                .iter()
+                                .map(|b| format!("{:02X}", b))
+                                .collect();
                             log_debug!(
-                                "[BLE] Meter loop: non-meter notification type=0x{:02X} len={}",
-                                notification.value.first().copied().unwrap_or(0),
-                                notification.value.len()
+                                "[BLE] Meter loop: other notification len={} {}",
+                                notification.value.len(),
+                                hex.join(" ")
                             );
                         }
                     } else {
@@ -920,7 +944,11 @@ async fn send_meter_request(peripheral: &Peripheral, characteristic: &Characteri
     // select the output on the device (0x41, field = output id), then request
     // meters for the 7 inputs plus that output; the device only streams one
     // output pair at a time. Fields only — write_struct_command places them
-    // at struct[24..].
+    // at struct[24..]. Payload mirrors setMeterOutputChannelId @0xb1564:
+    // count=8, then the FULL 10-slot id table (40 41 42 43 C4 C5 C6 <out>
+    // 00 00) — the selected output overwrites slot 7, two trailing zeros
+    // included (the memcpy always copies 10 bytes; without them the device
+    // reads past the chunk and drops the command)
     write_struct_command(peripheral, characteristic, 0x41, &[out_id]).await;
     let fields = [
         0x08u8, // meter channel count (7 inputs + 1 output)
@@ -932,6 +960,8 @@ async fn send_meter_request(peripheral: &Peripheral, characteristic: &Characteri
         METER_INPUT_IDS[5],
         METER_INPUT_IDS[6],
         out_byte,
+        0x00,
+        0x00,
     ];
     log_debug!(
         "[BLE] Meter request: output {} (byte 0x{:02X})",
