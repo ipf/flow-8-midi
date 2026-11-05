@@ -42,6 +42,7 @@ pub fn match_midi_command(
         | InterfaceMessage::DeleteSnapshot(_)
         | InterfaceMessage::LoadInputPreset(_, _)
         | InterfaceMessage::SetDeviceSetting(_, _)
+        | InterfaceMessage::FxRouting(_, _, _, _)
         | InterfaceMessage::TapTempo => {}
 
         #[cfg(any(debug_assertions, feature = "dev-tools"))]

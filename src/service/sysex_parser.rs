@@ -302,12 +302,14 @@ const CHANNEL_PHANTOMS: [BoolParam; 2] = [
 struct FxSysExLayout {
     param1_off: usize,
     param2_off: usize,
+    param3_off: usize,
     preset_off: usize,
 }
 
+// shortcut: param3_off unverified (guessed from layout spacing), confirm on a real 0x22 dump
 const FX_SYSEX: [FxSysExLayout; 2] = [
-    FxSysExLayout { param1_off: 0x0BC5, param2_off: 0x0BC6, preset_off: 0x0BC9 },
-    FxSysExLayout { param1_off: 0x0BCD, param2_off: 0x0BCF, preset_off: 0x0BD1 },
+    FxSysExLayout { param1_off: 0x0BC5, param2_off: 0x0BC6, param3_off: 0x0BC7, preset_off: 0x0BC9 },
+    FxSysExLayout { param1_off: 0x0BCD, param2_off: 0x0BCF, param3_off: 0x0BD0, preset_off: 0x0BD1 },
 ];
 
 #[derive(Debug, Clone)]
@@ -894,19 +896,18 @@ fn apply_fx_params(dump: &SysExDump, controller: &mut FLOW8Controller) -> usize 
             count += 1;
         }
 
-        let param1_byte = data[layout.param1_off];
-        let param1_cc = (param1_byte as u16 * 127 / 100).min(127) as u8;
-        controller.fx_slots[i].param1 = param1_cc;
+        // the wire byte is already in the sliders' 0..=100 domain — store it raw
+        controller.fx_slots[i].param1 = data[layout.param1_off];
         controller.fx_slots[i].param1_synced = true;
-        log_debug!("[SYSEX] {} param1: byte {} → CC {}", fx_names[i], param1_byte, param1_cc);
+        log_debug!("[SYSEX] {} param1: raw {}", fx_names[i], controller.fx_slots[i].param1);
         count += 1;
 
-        let param2_byte = data[layout.param2_off];
-        let param2_cc = (param2_byte as u16 * 127 / 100).min(127) as u8;
-        controller.fx_slots[i].param2 = param2_cc;
+        controller.fx_slots[i].param2 = data[layout.param2_off];
         controller.fx_slots[i].param2_synced = true;
-        log_debug!("[SYSEX] {} param2: byte {} → CC {}", fx_names[i], param2_byte, param2_cc);
+        log_debug!("[SYSEX] {} param2: raw {}", fx_names[i], controller.fx_slots[i].param2);
         count += 1;
+
+        controller.fx_slots[i].param3 = data[layout.param3_off];
     }
 
     count

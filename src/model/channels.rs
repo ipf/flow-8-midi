@@ -501,9 +501,14 @@ pub struct FxSlot {
     pub preset: u8,
     pub param1: u8,
     pub param2: u8,
+    pub param3: u8,
     pub preset_synced: bool,
     pub param1_synced: bool,
     pub param2_synced: bool,
+    /// FX output routing (cmd 0x11); the dump does not report it back
+    pub route_main: bool,
+    pub route_mon1: bool,
+    pub route_mon2: bool,
 }
 
 impl FxSlot {
@@ -513,9 +518,13 @@ impl FxSlot {
             preset: 0,
             param1: 0,
             param2: 0,
+            param3: 0,
             preset_synced: false,
             param1_synced: false,
             param2_synced: false,
+            route_main: true,
+            route_mon1: false,
+            route_mon2: false,
         }
     }
 

@@ -706,6 +706,30 @@ pub fn send_input_preset(
     send_ble_command(conn, 0x17, &payload)
 }
 
+/// FX output routing: FxSetup (op 0x11). Official layout (setFxSetup @0xaf270 +
+/// updateFXOutputRouting @0xb9c34): cmd[24]=fx_ch_id, cmd[25..27] = the FX
+/// channel's first/second/third param values, cmd[28..30] = route Main/Mon1/Mon2.
+pub fn send_fx_routing(
+    conn: &BleConnection,
+    fx_id: u8,
+    p1: u8,
+    p2: u8,
+    p3: u8,
+    to_main: bool,
+    to_mon1: bool,
+    to_mon2: bool,
+) -> Result<(), String> {
+    let mut payload = vec![0u8; 30];
+    payload[23] = fx_id; // cmd[24]
+    payload[24] = p1;
+    payload[25] = p2;
+    payload[26] = p3;
+    payload[27] = to_main as u8; // cmd[28]
+    payload[28] = to_mon1 as u8;
+    payload[29] = to_mon2 as u8;
+    send_ble_command(conn, 0x11, &payload)
+}
+
 // ── VU meters: MeterRequest (0x21); device streams MeterUpdate (0x22) ──
 // Official layout (setMeterOutputChannelId @0xb1564 in the native lib):
 // count byte + 10 channel ids copied from METER_REQUEST_CHANNELS

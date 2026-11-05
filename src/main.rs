@@ -520,6 +520,44 @@ fn update_interface(controller: &mut FLOW8Controller, message: InterfaceMessage)
             f.param2 = value;
             f.param2_synced = true;
         }
+        InterfaceMessage::FxRouting(fx_idx, to_main, to_mon1, to_mon2) => {
+            if let Some(f) = controller.fx_slots.get_mut(fx_idx as usize) {
+                f.route_main = to_main;
+                f.route_mon1 = to_mon1;
+                f.route_mon2 = to_mon2;
+            }
+            let fx_id = controller
+                .buses
+                .iter()
+                .filter(|b| b.bus_type == BusType::Fx)
+                .nth(fx_idx as usize)
+                .map(|b| b.id);
+            if let (Some(fx_id), Some(f)) =
+                (fx_id, controller.fx_slots.get(fx_idx as usize))
+            {
+                let (p1, p2, p3) = (f.param1, f.param2, f.param3);
+                log!(
+                    "[APP] FX {} routing: main={} mon1={} mon2={}",
+                    fx_idx + 1,
+                    to_main,
+                    to_mon1,
+                    to_mon2
+                );
+                let conn_arc = controller.ble_connection.clone();
+                std::thread::spawn(move || {
+                    let Ok(guard) = conn_arc.lock() else {
+                        return;
+                    };
+                    if let Some(conn) = guard.as_ref() {
+                        if let Err(e) =
+                            ble::send_fx_routing(conn, fx_id, p1, p2, p3, to_main, to_mon1, to_mon2)
+                        {
+                            log_warn!("[BLE] FX routing failed: {}", e);
+                        }
+                    }
+                });
+            }
+        }
         InterfaceMessage::FxMute => {
             controller.fx_muted = !controller.fx_muted;
             if let Some(conn) = controller.midi_conn.as_mut() {

@@ -39,6 +39,7 @@ pub enum InterfaceMessage {
     FxPreset(FxSlotId, u8),
     FxParam1(FxSlotId, u8),
     FxParam2(FxSlotId, u8),
+    FxRouting(FxSlotId, bool, bool, bool),
     FxMute,
     TapTempo,
 

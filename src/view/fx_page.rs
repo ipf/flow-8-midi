@@ -5,7 +5,7 @@ use crate::model::{
 };
 use crate::view::widgets::{sync_label, v_slider, h_slider, format_level, format_percent, UNSYNCED_COLOR};
 use iced::{
-    widget::{button, column, container, row, text, tooltip, Column, Row, Space},
+    widget::{button, checkbox, column, container, row, text, tooltip, Column, Row, Space},
     Center, Element, Fill,
 };
 
@@ -82,6 +82,16 @@ fn build_fx_slot_column(fx: &FxSlot) -> Element<'_, InterfaceMessage> {
 
     let param2_toggle = build_param2_toggle(fx_id, info.param2_off, info.param2_on, is_on, fx.param2_synced);
 
+    let routing_row = row![
+        text("Out").size(12).width(80),
+        build_route_checkbox(fx, 0, "Main"),
+        build_route_checkbox(fx, 1, "Mon 1"),
+        build_route_checkbox(fx, 2, "Mon 2"),
+    ]
+    .align_y(Center)
+    .spacing(8)
+    .width(Fill);
+
     let content = column![
         text(format!("FX {}", fx_id + 1)).size(15),
         Space::new().height(6),
@@ -90,6 +100,8 @@ fn build_fx_slot_column(fx: &FxSlot) -> Element<'_, InterfaceMessage> {
         param1_row,
         Space::new().height(8),
         param2_toggle,
+        Space::new().height(8),
+        routing_row,
     ]
     .padding([12, 10])
     .width(Fill)
@@ -99,6 +111,26 @@ fn build_fx_slot_column(fx: &FxSlot) -> Element<'_, InterfaceMessage> {
         .style(container::rounded_box)
         .width(Fill)
         .padding(2)
+        .into()
+}
+
+fn build_route_checkbox<'a>(
+    fx: &'a FxSlot,
+    which: usize,
+    label: &'a str,
+) -> Element<'a, InterfaceMessage> {
+    let fx_id = fx.id;
+    let (main, mon1, mon2) = (fx.route_main, fx.route_mon1, fx.route_mon2);
+    let (checked, routing) = match which {
+        0 => (main, (!main, mon1, mon2)),
+        1 => (mon1, (main, !mon1, mon2)),
+        _ => (mon2, (main, mon1, !mon2)),
+    };
+    checkbox::Checkbox::new(checked)
+        .label(label)
+        .on_toggle(move |_| InterfaceMessage::FxRouting(fx_id, routing.0, routing.1, routing.2))
+        .text_size(11)
+        .spacing(4)
         .into()
 }
 
