@@ -258,6 +258,25 @@ fn try_connect_flow8(controller: &mut FLOW8Controller) {
 
 /// Send the full FX setup block (0x11: params 1-3 + Main/Mon1/Mon2 routing)
 /// for one FX slot, using the slot's current model state.
+/// Channel mute (0x08) / solo (0x01): struct commands with [ch_id][state]
+/// at cmd[24..25] (queueChannelMuteCommandPackets @0x7e2d0 /
+/// queueChannelSoloCommandPackets @0x7e340).
+fn send_channel_flag(controller: &FLOW8Controller, opcode: u8, ch_id: u8, state: bool) {
+    let conn_arc = controller.ble_connection.clone();
+    std::thread::spawn(move || {
+        let Ok(guard) = conn_arc.lock() else {
+            return;
+        };
+        if let Some(conn) = guard.as_ref() {
+            if let Err(e) = ble::send_ble_struct_command(conn, opcode, &[ch_id, state as u8]) {
+                log_warn!("[BLE] cmd 0x{:02X} failed: {}", opcode, e);
+            } else {
+                log!("[BLE] ch {} flag 0x{:02X} = {}", ch_id, opcode, state);
+            }
+        }
+    });
+}
+
 fn send_fx_setup(controller: &FLOW8Controller, fx_idx: u8) {
     let Some(fx_id) = controller
         .buses
@@ -373,12 +392,20 @@ fn update_interface(controller: &mut FLOW8Controller, message: InterfaceMessage)
         }
 
         InterfaceMessage::Mute(ch, _) => {
-            let c = &mut controller.channels[ch as usize];
-            c.is_muted = !c.is_muted;
+            let (id, state) = {
+                let c = &mut controller.channels[ch as usize];
+                c.is_muted = !c.is_muted;
+                (c.id, c.is_muted)
+            };
+            send_channel_flag(controller, 0x08, id, state);
         }
         InterfaceMessage::Solo(ch, _) => {
-            let c = &mut controller.channels[ch as usize];
-            c.is_soloed = !c.is_soloed;
+            let (id, state) = {
+                let c = &mut controller.channels[ch as usize];
+                c.is_soloed = !c.is_soloed;
+                (c.id, c.is_soloed)
+            };
+            send_channel_flag(controller, 0x01, id, state);
         }
         InterfaceMessage::Gain(ch, value) => {
             let c = &mut controller.channels[ch as usize];

@@ -866,13 +866,16 @@ pub fn start_meter_loop(meter_tx: mpsc::Sender<(Vec<f32>, usize)>) {
             let mut other_logged = 0u32;
             let mut rotation = 0usize;
             log!("[BLE] Meter loop running (ride-along stream)");
-            send_meter_request(&peripheral, &characteristic, rotation).await;
+            // the device answers MeterRequest with level pushes (a pull
+            // model): the official app polls at meter rate (~20 Hz). One
+            // request after pairing produced a single 3-record burst, then
+            // silence — so poll every 250 ms and rotate the metered output
+            // (Main → Mon 1 → Mon 2) every 2 s = every 8th request.
+            write_struct_command(&peripheral, &characteristic, 0x41, &[7]).await;
+            send_meter_poll(&peripheral, &characteristic, 0).await;
             let mut last_sent = std::time::Instant::now();
-
-            // the device streams one output pair at a time — rotate the metered
-            // output every 2 s (Main → Mon 1 → Mon 2) while the stream flows
             loop {
-                let wait = Duration::from_secs(2).saturating_sub(last_sent.elapsed());
+                let wait = Duration::from_millis(250).saturating_sub(last_sent.elapsed());
                 let notification = match tokio::time::timeout(wait, notifications.next()).await {
                     Ok(Some(n)) => Some(n),
                     Ok(None) => {
@@ -885,9 +888,9 @@ pub fn start_meter_loop(meter_tx: mpsc::Sender<(Vec<f32>, usize)>) {
                     if notification.value.is_empty()
                         || notification.value[0] != METER_UPDATE_TYPE
                     {
-                        // hex-log the first few unknowns: the real meter update
+                        // hex-log the first unknowns: the real meter update
                         // format reveals itself here on first flow
-                        if other_logged < 8 {
+                        if other_logged < 100 {
                             other_logged += 1;
                             let hex: Vec<String> = notification
                                 .value
@@ -930,26 +933,25 @@ pub fn start_meter_loop(meter_tx: mpsc::Sender<(Vec<f32>, usize)>) {
                 }
                 if last_sent.elapsed() >= Duration::from_secs(2) {
                     rotation += 1;
-                    send_meter_request(&peripheral, &characteristic, rotation).await;
+                    let out_id = 7 + (rotation % METER_OUTPUT_BYTES.len()) as u8;
+                    log_debug!("[BLE] Meter rotation → output {}", out_id);
+                    write_struct_command(&peripheral, &characteristic, 0x41, &[out_id]).await;
                     last_sent = std::time::Instant::now();
+                } else {
+                    // poll: request levels for the currently selected output
+                    let rot = rotation % METER_OUTPUT_BYTES.len();
+                    send_meter_poll(&peripheral, &characteristic, rot).await;
                 }
             }
         });
     });
 }
 
-async fn send_meter_request(peripheral: &Peripheral, characteristic: &Characteristic, rotation: usize) {
-    let out_id = 7 + (rotation % METER_OUTPUT_BYTES.len()) as u8;
-    let out_byte = METER_OUTPUT_BYTES[rotation % METER_OUTPUT_BYTES.len()];
-    // select the output on the device (0x41, field = output id), then request
-    // meters for the 7 inputs plus that output; the device only streams one
-    // output pair at a time. Fields only — write_struct_command places them
-    // at struct[24..]. Payload mirrors setMeterOutputChannelId @0xb1564:
-    // count=8, then the FULL 10-slot id table (40 41 42 43 C4 C5 C6 <out>
-    // 00 00) — the selected output overwrites slot 7, two trailing zeros
-    // included (the memcpy always copies 10 bytes; without them the device
-    // reads past the chunk and drops the command)
-    write_struct_command(peripheral, characteristic, 0x41, &[out_id]).await;
+/// MeterRequest poll (0x21): fields = count=8 + the full 10-slot id table
+/// (40 41 42 43 C4 C5 C6 <out> 00 00) — the selected output overwrites slot
+/// 7, the memcpy in setMeterOutputChannelId @0xb1564 always copies 10 bytes.
+async fn send_meter_poll(peripheral: &Peripheral, characteristic: &Characteristic, rot: usize) {
+    let out_byte = METER_OUTPUT_BYTES[rot];
     let fields = [
         0x08u8, // meter channel count (7 inputs + 1 output)
         METER_INPUT_IDS[0],
@@ -963,11 +965,6 @@ async fn send_meter_request(peripheral: &Peripheral, characteristic: &Characteri
         0x00,
         0x00,
     ];
-    log_debug!(
-        "[BLE] Meter request: output {} (byte 0x{:02X})",
-        out_id,
-        out_byte
-    );
     write_struct_command(peripheral, characteristic, 0x21, &fields).await;
 }
 
