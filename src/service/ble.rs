@@ -418,7 +418,7 @@ async fn read_device_settings(
 async fn fetch_snapshot_names(
     peripheral: &Peripheral,
     characteristic: &Characteristic,
-    meter_tx: Option<mpsc::Sender<Vec<f32>>>,
+    meter_tx: Option<mpsc::Sender<(Vec<f32>, usize)>>,
     settings_tx: Option<mpsc::Sender<(u8, u8)>>,
     mut notification_stream: NotifyStream,
 ) -> Result<Vec<Option<String>>, String> {
@@ -527,7 +527,7 @@ async fn fetch_snapshot_names(
 pub fn connect_flow8_ble(
     status_tx: mpsc::Sender<BleStatus>,
     snapshot_tx: mpsc::Sender<Vec<Option<String>>>,
-    meter_tx: mpsc::Sender<Vec<f32>>,
+    meter_tx: mpsc::Sender<(Vec<f32>, usize)>,
     settings_tx: mpsc::Sender<(u8, u8)>,
 ) -> Result<BleConnection, String> {
     let rt = tokio::runtime::Runtime::new().map_err(|e| format!("Tokio runtime error: {}", e))?;
@@ -747,8 +747,15 @@ pub fn send_fx_preset(conn: &BleConnection, fx_id: u8, preset: u8) -> Result<(),
 // count byte + 10 channel ids copied from METER_REQUEST_CHANNELS
 // (40 41 42 43 C4 C5 C6 8F + 2 zero pad); the app's wire serializer moves
 // the type byte into the 6-byte chunk header, so the payload has NO type.
-const METER_IDS: [u8; 10] = [0x40, 0x41, 0x42, 0x43, 0xC4, 0xC5, 0xC6, 0x8F, 0x00, 0x00];
 const METER_UPDATE_TYPE: u8 = 0x22;
+// setMeterOutputChannelId @0xb1564: cmd[24]=count(8), cmd[25..31] = input ids
+// (id|0x40 mono, |0xC0 stereo), cmd[32] = the SELECTED output (id|0xC0) — the
+// device reports that output's L/R in update floats 10/11 (the official app
+// patches METER_INDEX_TO_CHANNEL_INDEX[10]/[11] with the output's channel
+// index). SelectOutputChannel (0x41, [output id]) switches the device side.
+const METER_INPUT_IDS: [u8; 7] = [0x40, 0x41, 0x42, 0x43, 0xC4, 0xC5, 0xC6];
+/// metered outputs in rotation: Main (7), Mon 1 (8), Mon 2 (9) — bus id | 0xC0 (stereo)
+const METER_OUTPUT_BYTES: [u8; 3] = [0xC7, 0xC8, 0xC9];
 
 /// piecewise dB → linear 0..1 (−70 dB floor → 0, 0 dBFS → 1.0), from the official app
 pub fn meter_db_to_linear(db: f32) -> f32 {
@@ -781,7 +788,7 @@ pub fn start_meter_loop(
     peripheral: Peripheral,
     characteristic: Characteristic,
     notifications: NotifyStream,
-    meter_tx: mpsc::Sender<Vec<f32>>,
+    meter_tx: mpsc::Sender<(Vec<f32>, usize)>,
 ) {
     std::thread::spawn(move || {
         let rt = match tokio::runtime::Runtime::new() {
@@ -794,104 +801,107 @@ pub fn start_meter_loop(
             let mut notifications = notifications;
             let mut first_data = true;
             let mut other_logged = 0u32;
-            let mut request_variant = 0u32;
+            let mut rotation = 0usize;
             log!("[BLE] Meter loop running (shared notification stream)");
-            send_meter_request(&peripheral, &characteristic, request_variant).await;
+            send_meter_request(&peripheral, &characteristic, rotation).await;
+            let mut last_sent = std::time::Instant::now();
 
-            // 5 s of silence → re-request with the next variant (device may
-            // have stopped pushing, or the request shape is wrong)
+            // the device streams one output pair at a time — rotate the metered
+            // output every 2 s (Main → Mon 1 → Mon 2) while the stream flows
             loop {
-                let notification =
-                    match tokio::time::timeout(Duration::from_secs(5), notifications.next()).await
+                let wait = Duration::from_secs(2).saturating_sub(last_sent.elapsed());
+                let notification = match tokio::time::timeout(wait, notifications.next()).await {
+                    Ok(Some(n)) => Some(n),
+                    Ok(None) => {
+                        log_warn!("[BLE] Meter loop: notification stream ended");
+                        break;
+                    }
+                    Err(_) => None,
+                };
+                if let Some(notification) = notification {
+                    if notification.value.is_empty()
+                        || notification.value[0] != METER_UPDATE_TYPE
                     {
-                        Ok(Some(n)) => n,
-                        Ok(None) => {
-                            log_warn!("[BLE] Meter loop: notification stream ended");
-                            break;
+                        if other_logged < 3 {
+                            other_logged += 1;
+                            log_debug!(
+                                "[BLE] Meter loop: non-meter notification type=0x{:02X} len={}",
+                                notification.value.first().copied().unwrap_or(0),
+                                notification.value.len()
+                            );
                         }
-                        Err(_) => {
-                            request_variant += 1;
-                            send_meter_request(&peripheral, &characteristic, request_variant).await;
-                            continue;
+                    } else {
+                        // payload = [0x22][15 × f32 LE dB][u16 packed GR at +60]
+                        let v = &notification.value;
+                        let mut values = Vec::with_capacity(15);
+                        for i in 0..15 {
+                            let off = 1 + i * 4;
+                            if off + 4 <= v.len() {
+                                values.push(f32::from_le_bytes([
+                                    v[off],
+                                    v[off + 1],
+                                    v[off + 2],
+                                    v[off + 3],
+                                ]));
+                            }
                         }
-                    };
-                if notification.value.is_empty() || notification.value[0] != METER_UPDATE_TYPE {
-                    if other_logged < 3 {
-                        other_logged += 1;
-                        log_debug!(
-                            "[BLE] Meter loop: non-meter notification type=0x{:02X} len={}",
-                            notification.value.first().copied().unwrap_or(0),
-                            notification.value.len()
-                        );
-                    }
-                    continue;
-                }
-                // payload = [0x22][15 × f32 LE dB][u16 GR at +60]
-                let v = &notification.value;
-                let mut values = Vec::with_capacity(15);
-                for i in 0..15 {
-                    let off = 1 + i * 4;
-                    if off + 4 <= v.len() {
-                        values.push(f32::from_le_bytes([
-                            v[off],
-                            v[off + 1],
-                            v[off + 2],
-                            v[off + 3],
-                        ]));
+                        if first_data {
+                            first_data = false;
+                            let floats: Vec<String> =
+                                values.iter().map(|f| format!("{:.1}", f)).collect();
+                            log!(
+                                "[BLE] Meter data flowing ({} floats): {}",
+                                values.len(),
+                                floats.join(" ")
+                            );
+                        }
+                        let _ = meter_tx.send((values, rotation % METER_OUTPUT_BYTES.len()));
                     }
                 }
-                if first_data {
-                    first_data = false;
-                    let floats: Vec<String> =
-                        values.iter().map(|f| format!("{:.1}", f)).collect();
-                    log!(
-                        "[BLE] Meter data flowing ({} floats): {}",
-                        values.len(),
-                        floats.join(" ")
-                    );
+                if last_sent.elapsed() >= Duration::from_secs(2) {
+                    rotation += 1;
+                    send_meter_request(&peripheral, &characteristic, rotation).await;
+                    last_sent = std::time::Instant::now();
                 }
-                let _ = meter_tx.send(values);
             }
         });
     });
 }
 
-async fn send_meter_request(peripheral: &Peripheral, characteristic: &Characteristic, variant: u32) {
-    // Official MeterRequest payload = [count=8][10 channel ids] (count at
-    // struct[24], ids at struct[25..35] in the native lib). The device
-    // accepts bare writes when sizes match (the 0x07 names request proves
-    // it), so cycle bare / 6-byte-header-framed / full-struct and let the
-    // 0x22 stream tell us which shape it takes.
-    let mut payload = Vec::with_capacity(11);
-    payload.push(0x08); // meter channel count (output selected → 8)
-    payload.extend_from_slice(&METER_IDS);
-    let framed: Vec<u8> = {
-        // wire header [len u16 LE][type][chunk_idx][chunk_count][seq]
-        let mut p = vec![payload.len() as u8, 0, 0x21, 0, 1, 0];
-        p.extend_from_slice(&payload);
-        p
-    };
-    // [0x21] + 23 zero bytes (struct bytes 1..24) + payload — if the device's
-    // bare parser copies into struct bytes 1.., count lands at struct[24]
-    let mut bare_struct = vec![0x21u8; 24];
-    bare_struct.extend_from_slice(&payload);
-    let (packet, mode) = match variant % 3 {
-        0 => ([vec![0x21u8], payload.clone()].concat(), "bare"),
-        1 => (framed, "framed"),
-        _ => (bare_struct, "bare-struct"),
-    };
-    log_debug!(
-        "[BLE] Meter request variant {} ({}, {} bytes)",
-        variant % 3,
-        mode,
-        packet.len()
-    );
-    let write = peripheral.write(characteristic, &packet, WriteType::WithoutResponse);
+async fn write_ble_raw(
+    peripheral: &Peripheral,
+    characteristic: &Characteristic,
+    packet: &[u8],
+    what: &str,
+) {
+    let write = peripheral.write(characteristic, packet, WriteType::WithoutResponse);
     match tokio::time::timeout(Duration::from_millis(1500), write).await {
         Ok(Ok(_)) => {}
-        Ok(Err(e)) => log_debug!("[BLE] Meter request write error: {}", e),
-        Err(_) => log_debug!("[BLE] Meter request: no ack (packet still delivered)"),
+        Ok(Err(e)) => log_debug!("[BLE] {} write error: {}", what, e),
+        Err(_) => log_debug!("[BLE] {}: no ack (packet still delivered)", what),
     }
+}
+
+async fn send_meter_request(peripheral: &Peripheral, characteristic: &Characteristic, rotation: usize) {
+    let out_id = 7 + (rotation % METER_OUTPUT_BYTES.len()) as u8;
+    let out_byte = METER_OUTPUT_BYTES[rotation % METER_OUTPUT_BYTES.len()];
+    // select the output on the device, then request meters for the 7 inputs
+    // plus that output; the device only streams one output pair at a time
+    write_ble_raw(peripheral, characteristic, &[0x41, out_id], "Select output").await;
+    let mut payload = Vec::with_capacity(11);
+    payload.push(0x08); // meter channel count (7 inputs + 1 output)
+    payload.extend_from_slice(&METER_INPUT_IDS);
+    payload.push(out_byte);
+    payload.extend_from_slice(&[0x00, 0x00]);
+    let mut packet = vec![0x21u8];
+    packet.extend_from_slice(&payload);
+    log_debug!(
+        "[BLE] Meter request: output {} (byte 0x{:02X}), {} bytes",
+        out_id,
+        out_byte,
+        packet.len()
+    );
+    write_ble_raw(peripheral, characteristic, &packet, "Meter request").await;
 }
 
 /// Re-fetch the snapshot list from the device. One-shot: opens its own

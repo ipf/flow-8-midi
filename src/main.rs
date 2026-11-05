@@ -744,16 +744,18 @@ fn update_interface(controller: &mut FLOW8Controller, message: InterfaceMessage)
                 }
             }
 
-            // VU meters: decay every tick, then take fresh values from the meter stream
+            // VU meters: channels decay fast (their 0x22 slots stream at full rate);
+            // buses decay slowly (each output only streams 1 in 3 of the rotation)
             for ch in &mut controller.channels {
                 ch.meter *= 0.90;
             }
             for bus in &mut controller.buses {
-                bus.meter *= 0.90;
+                bus.meter *= 0.995;
             }
             if let Some(ref meter_rx) = controller.meter_receiver {
-                while let Ok(values) = meter_rx.try_recv() {
-                    // floats 0-3 = inputs 1-4, 4/5 = input5 L/R, 6/7 = input6 L/R, 8/9 = BTUSB L/R
+                while let Ok((values, out_rot)) = meter_rx.try_recv() {
+                    // floats 0-9 (official index table): 0-3 = inputs 1-4,
+                    // 4/5 = input5 L/R, 6/7 = input6 L/R, 8/9 = USB/BT L/R
                     for (i, ch) in controller.channels.iter_mut().enumerate() {
                         let db = match i {
                             0..=3 => values.get(i).copied(),
@@ -766,20 +768,16 @@ fn update_interface(controller: &mut FLOW8Controller, message: InterfaceMessage)
                             ch.meter = linear.max(ch.meter);
                         }
                     }
-                    // floats 10/11 = Main L/R, 12 = Mon 1, 13 = Mon 2
-                    // (unverified — the 0x22 stream has never flowed yet)
-                    for bus in &mut controller.buses {
-                        let db = match (bus.bus_type, bus.index) {
-                            (BusType::Main, _) => {
-                                values.get(10).zip(values.get(11)).map(|(l, r)| l.max(*r))
-                            }
-                            (BusType::Monitor, 1) => values.get(12).copied(),
-                            (BusType::Monitor, 2) => values.get(13).copied(),
-                            _ => None,
-                        };
-                        if let Some(db) = db {
-                            let linear = crate::service::ble::meter_db_to_linear(db);
-                            bus.meter = linear.max(bus.meter);
+                    // floats 10/11 = L/R of the rotated metered output
+                    // (rotation 0/1/2 → bus id 7/8/9 = Main/Mon 1/Mon 2)
+                    if let (Some(l), Some(r)) = (values.get(10), values.get(11)) {
+                        let db = l.max(*r);
+                        let bus_id = 7 + out_rot as u8;
+                        if let Some(bus) =
+                            controller.buses.iter_mut().find(|b| b.id == bus_id)
+                        {
+                            bus.meter =
+                                crate::service::ble::meter_db_to_linear(db).max(bus.meter);
                         }
                     }
                 }

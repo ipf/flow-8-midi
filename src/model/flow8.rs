@@ -106,7 +106,7 @@ pub struct FLOW8Controller {
     pub rename_buffer: String,
     pub tap_times: Vec<Instant>,
     pub delete_pending: Option<(usize, Instant)>,
-    pub meter_receiver: Option<mpsc::Receiver<Vec<f32>>>,
+    pub meter_receiver: Option<mpsc::Receiver<(Vec<f32>, usize)>>,
     /// device-setting values read back over BLE at connect (0x26 probe)
     pub ble_settings_receiver: Option<mpsc::Receiver<(u8, u8)>>,
     /// last value sent per device setting id (0x01..=0x0f); not read back from device
