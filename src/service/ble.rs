@@ -272,12 +272,9 @@ async fn connect_and_auth(
         match wait_for_cmd(&mut stream, 0x35, Duration::from_secs(30)).await {
             Some(_) => {
                 log!("[BLE] Handshake challenge (0x35) received, replying with auth key...");
-                let reply: Vec<u8> = [0x39]
-                    .iter()
-                    .copied()
-                    .chain(AUTH_PACKET[2..18].iter().copied())
-                    .collect();
-                let write = peripheral.write(&characteristic, &reply, WriteType::WithoutResponse);
+                // the full on-air auth packet: [0x39][0x01][16-byte key][cksum]
+                // (proven 2026-11-04 — the trimmed [0x39]+key reply is ignored)
+                let write = peripheral.write(&characteristic, &AUTH_PACKET, WriteType::WithoutResponse);
                 match tokio::time::timeout(Duration::from_millis(1500), write).await {
                     Ok(Ok(_)) => {}
                     Ok(Err(e)) => log_warn!("[BLE] Handshake reply write failed: {}", e),
