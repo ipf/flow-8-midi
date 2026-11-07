@@ -448,38 +448,45 @@ async fn read_device_settings(
 async fn fetch_snapshot_names(
     peripheral: &Peripheral,
     characteristic: &Characteristic,
-    meter_tx: Option<mpsc::Sender<crate::model::flow8::MeterMsg>>,
     settings_tx: Option<mpsc::Sender<(u8, u8)>>,
     mut notification_stream: NotifyStream,
-) -> Result<Vec<Option<String>>, String> {
+) -> Result<(Vec<Option<String>>, NotifyStream), String> {
     use tokio_stream::StreamExt;
 
     log!("[BLE] Draining state dump (0x38)...");
-    let drain_result = tokio::time::timeout(Duration::from_secs(3), async {
-        let mut dump_chunks = 0u32;
-        while let Some(notification) = notification_stream.next().await {
-            if !notification.value.is_empty() {
-                let ptype = notification.value[0];
-                log_debug!(
-                    "[BLE] Notification: type=0x{:02X}, len={}",
-                    ptype,
-                    notification.value.len()
-                );
-                if ptype == STATE_DUMP_TYPE {
-                    dump_chunks += 1;
-                    if dump_chunks >= 4 {
-                        return dump_chunks;
+    let mut dump_chunks = 0u32;
+    let drain_deadline = std::time::Instant::now() + Duration::from_secs(3);
+    while dump_chunks < 4 {
+        let wait = drain_deadline.saturating_duration_since(std::time::Instant::now());
+        if wait.is_zero() {
+            break;
+        }
+        match tokio::time::timeout(wait, notification_stream.next()).await {
+            Ok(Some(notification)) => {
+                if !notification.value.is_empty() {
+                    let ptype = notification.value[0];
+                    log_debug!(
+                        "[BLE] Notification: type=0x{:02X}, len={}",
+                        ptype,
+                        notification.value.len()
+                    );
+                    if ptype == STATE_DUMP_TYPE {
+                        dump_chunks += 1;
                     }
                 }
             }
+            Ok(None) => break,
+            Err(_) => break,
         }
-        dump_chunks
-    })
-    .await;
+    }
 
-    match drain_result {
-        Ok(n) => log!("[BLE] State dump received ({} chunks)", n),
-        Err(_) => log_warn!("[BLE] State dump wait timed out, proceeding anyway"),
+    if dump_chunks >= 4 {
+        log!("[BLE] State dump received ({} chunks)", dump_chunks);
+    } else {
+        log_warn!(
+            "[BLE] State dump incomplete ({} chunks), proceeding anyway",
+            dump_chunks
+        );
     }
 
     // one-shot settings readback while the stream is idle
@@ -499,53 +506,48 @@ async fn fetch_snapshot_names(
         .await
     {
         log_warn!("[BLE] Config request write failed: {}", e);
-        return Ok(Vec::new());
+        return Ok((Vec::new(), notification_stream));
     }
 
-    let result = tokio::time::timeout(Duration::from_secs(5), async {
-        while let Some(notification) = notification_stream.next().await {
-            if !notification.value.is_empty() {
-                let ptype = notification.value[0];
-                log_debug!(
-                    "[BLE] Notification: type=0x{:02X}, len={}",
-                    ptype,
-                    notification.value.len()
-                );
-                if ptype == SNAPSHOT_RESPONSE_TYPE {
-                    return Some(parse_snapshot_names(&notification.value));
+    let mut names: Option<Vec<Option<String>>> = None;
+    let name_deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while names.is_none() {
+        let wait = name_deadline.saturating_duration_since(std::time::Instant::now());
+        if wait.is_zero() {
+            break;
+        }
+        match tokio::time::timeout(wait, notification_stream.next()).await {
+            Ok(Some(notification)) => {
+                if !notification.value.is_empty() {
+                    let ptype = notification.value[0];
+                    log_debug!(
+                        "[BLE] Notification: type=0x{:02X}, len={}",
+                        ptype,
+                        notification.value.len()
+                    );
+                    if ptype == SNAPSHOT_RESPONSE_TYPE {
+                        names = Some(parse_snapshot_names(&notification.value));
+                    }
                 }
             }
+            Ok(None) => break,
+            Err(_) => break,
         }
-        None
-    })
-    .await;
-
-    // the meter loop rides THIS session's connection: it is authenticated
-    // (the handshake is per-connection and the mixer answers meter polls only
-    // on an authenticated one — the old separate ride-along session never
-    // handshook and its polls went unanswered)
-    if let Some(meter_tx) = meter_tx {
-        start_meter_loop(peripheral.clone(), characteristic.clone(), meter_tx);
     }
 
-    // keep the subscription alive for the session (the meter stream shares it)
-    match result {
-        Ok(Some(names)) => {
+    match names {
+        Some(names) => {
             let named_count = names.iter().filter(|n| n.is_some()).count();
             log!(
                 "[BLE] Parsed {} snapshot slots ({} with names)",
                 names.len(),
                 named_count
             );
-            Ok(names)
+            Ok((names, notification_stream))
         }
-        Ok(None) => {
-            log_warn!("[BLE] Notification stream ended without snapshot response");
-            Ok(Vec::new())
-        }
-        Err(_) => {
+        None => {
             log_warn!("[BLE] Timeout waiting for snapshot names (5s)");
-            Ok(Vec::new())
+            Ok((Vec::new(), notification_stream))
         }
     }
 }
@@ -580,21 +582,38 @@ pub fn connect_flow8_ble(
 
         let _ = status_tx.send(BleStatus::Connected);
 
-        match fetch_snapshot_names(
+        let (names, notification_stream) = match fetch_snapshot_names(
             &peripheral,
             &characteristic,
-            Some(meter_tx),
             Some(settings_tx),
             notification_stream,
         )
         .await
         {
-            Ok(names) if !names.is_empty() => {
-                let _ = snapshot_tx.send(names);
+            Ok(x) => x,
+            Err(e) => {
+                log_warn!("[BLE] Failed to get snapshot names: {}", e);
+                return Ok(BleConnection {
+                    peripheral,
+                    characteristic,
+                });
             }
-            Ok(_) => log_warn!("[BLE] No snapshot names received"),
-            Err(e) => log_warn!("[BLE] Failed to get snapshot names: {}", e),
+        };
+
+        if !names.is_empty() {
+            let _ = snapshot_tx.send(names);
+        } else {
+            log_warn!("[BLE] No snapshot names received");
         }
+
+        // the meter loop rides the authenticated main session's notification
+        // stream (a second subscribe() on the same connection stalls on BlueZ)
+        start_meter_loop(
+            peripheral.clone(),
+            characteristic.clone(),
+            notification_stream,
+            meter_tx,
+        );
 
         Ok(BleConnection {
             peripheral,
@@ -852,12 +871,12 @@ pub fn meter_db_to_linear(db: f32) -> f32 {
 }
 
 /// Run the meter receive loop on its own thread, riding the main session's
-/// authenticated connection (a second subscribe()/notifications() call on the
-/// same connection is fine — the CCCD is per-connection and the mixer answers
-/// meter polls only on an authenticated one).
+/// notification stream (a second subscribe() on the same connection stalls on
+/// BlueZ; the mixer answers meter polls only on an authenticated connection).
 pub fn start_meter_loop(
     peripheral: Peripheral,
     characteristic: Characteristic,
+    mut notifications: NotifyStream,
     meter_tx: mpsc::Sender<MeterMsg>,
 ) {
     std::thread::spawn(move || {
@@ -868,26 +887,6 @@ pub fn start_meter_loop(
         rt.block_on(async move {
             use tokio_stream::StreamExt;
 
-            let mut notifications = loop {
-                match peripheral.subscribe(&characteristic).await {
-                    Ok(_) => {}
-                    Err(e) => {
-                        log_warn!("[BLE] Meter loop: subscribe failed: {} — retrying in 10 s", e);
-                        tokio::time::sleep(Duration::from_secs(10)).await;
-                        continue;
-                    }
-                }
-                match peripheral.notifications().await {
-                    Ok(s) => break s,
-                    Err(e) => {
-                        log_warn!(
-                            "[BLE] Meter loop: notification stream failed: {} — retrying in 10 s",
-                            e
-                        );
-                        tokio::time::sleep(Duration::from_secs(10)).await;
-                    }
-                }
-            };
             let mut first_data = true;
             let mut other_logged = 0u32;
             let mut samples_logged = 0u32;
@@ -1044,8 +1043,8 @@ pub fn refresh_snapshot_names(conn: &BleConnection) -> Vec<Option<String>> {
                 return Vec::new();
             }
         };
-        match fetch_snapshot_names(&conn.peripheral, &conn.characteristic, None, None, stream).await {
-            Ok(names) => names,
+        match fetch_snapshot_names(&conn.peripheral, &conn.characteristic, None, stream).await {
+            Ok((names, _stream)) => names,
             Err(e) => {
                 log_warn!("[BLE] Snapshot refresh failed: {}", e);
                 Vec::new()
