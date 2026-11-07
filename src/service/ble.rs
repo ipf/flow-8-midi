@@ -199,7 +199,7 @@ async fn connect_peripheral(peripheral: &Peripheral) -> Result<(), String> {
     Ok(())
 }
 
-const MAX_CONNECT_RETRIES: u32 = 11;
+const MAX_CONNECT_RETRIES: u32 = 3; // each attempt waits 30 s for the challenge
 
 async fn connect_and_auth(
     peripheral: &Peripheral,
@@ -243,10 +243,9 @@ async fn connect_and_auth(
         log!("[BLE] Characteristic found.");
         let _ = status_tx.send(BleStatus::Authenticating);
 
-        // subscribe BEFORE auth: the device pushes its 0x37 handshake challenge
-        // right after the auth key, and notifications sent before the CCCD is
-        // on are lost — without the challenge the session never completes and
-        // the device never streams meters
+        // subscribe BEFORE the handshake: the mixer's 0x37 challenge arrives
+        // unsolicited right after connect, and notifications sent before the
+        // CCCD is on are lost
         if let Err(e) = peripheral.subscribe(&characteristic).await {
             log_warn!("[BLE] Subscribe failed: {}", e);
             last_err = format!("Subscribe failed: {}", e);
@@ -263,60 +262,60 @@ async fn connect_and_auth(
             }
         };
 
-        log!("[BLE] Sending auth key...");
-        if let Err(e) = peripheral
-            .write(&characteristic, &AUTH_PACKET, WriteType::WithResponse)
-            .await
-        {
-            log_warn!("[BLE] Auth write failed: {}", e);
-            peripheral.disconnect().await.ok();
-            last_err = format!("Auth write failed: {}", e);
-            continue;
-        }
-
-        tokio::time::sleep(Duration::from_millis(300)).await;
-
-        log!("[BLE] Sending session start...");
-        if let Err(e) = peripheral
-            .write(&characteristic, &SESSION_START_PACKET, WriteType::WithResponse)
-            .await
-        {
-            log_warn!("[BLE] Session start write failed: {}", e);
-            peripheral.disconnect().await.ok();
-            last_err = format!("Session start write failed: {}", e);
-            continue;
-        }
-
-        // the device answers with a 0x37 handshake challenge; reply with the
-        // auth key (0x39 + key bytes) to complete the session
-        match wait_for_cmd(&mut stream, 0x37, Duration::from_secs(3)).await {
+        // The official app sends NOTHING here (XAIRDevice.java: it enters
+        // WaitingForHandshake after service discovery and writes only when the
+        // mixer initiates). The mixer sends the 0x37 challenge, we reply
+        // 0x39+key, it confirms with 0x38, and only then does the app send the
+        // 0x37 session-start (native onHandShakeReplyCommandReceived queues a
+        // 0x37 on 0x38). Writing anything first desyncs the mixer's state
+        // machine — it never challenges a connection that talks first.
+        log!("[BLE] Waiting for handshake challenge — press MENU → PAIRING → PAIR REMOTE...");
+        match wait_for_cmd(&mut stream, 0x37, Duration::from_secs(30)).await {
             Some(_) => {
                 log!("[BLE] Handshake challenge received, replying with auth key...");
-                let reply: Vec<u8> = [0x39].iter().copied().chain(AUTH_PACKET[2..18].iter().copied()).collect();
+                let reply: Vec<u8> = [0x39]
+                    .iter()
+                    .copied()
+                    .chain(AUTH_PACKET[2..18].iter().copied())
+                    .collect();
                 let write = peripheral.write(&characteristic, &reply, WriteType::WithoutResponse);
                 match tokio::time::timeout(Duration::from_millis(1500), write).await {
                     Ok(Ok(_)) => {}
                     Ok(Err(e)) => log_warn!("[BLE] Handshake reply write failed: {}", e),
                     Err(_) => log_debug!("[BLE] Handshake reply: no ack (packet still delivered)"),
                 }
-                // device should now push the 0x38 state dump and stream meters
-                match wait_for_cmd(&mut stream, 0x38, Duration::from_secs(3)).await {
-                    Some(_) => log!("[BLE] State dump received — session established"),
-                    None => log_warn!("[BLE] No state dump after handshake reply"),
+                // device confirms with the 0x38 state dump
+                match wait_for_cmd(&mut stream, 0x38, Duration::from_secs(5)).await {
+                    Some(_) => {
+                        log!("[BLE] State dump received — sending session start...");
+                        if let Err(e) = peripheral
+                            .write(&characteristic, &SESSION_START_PACKET, WriteType::WithResponse)
+                            .await
+                        {
+                            log_warn!("[BLE] Session start write failed: {}", e);
+                        }
+                        log!("[BLE] Authenticated and session started");
+                        return Ok((characteristic, stream));
+                    }
+                    None => {
+                        last_err = "No state dump after handshake reply".to_string();
+                        log_warn!("[BLE] {}", last_err);
+                        peripheral.disconnect().await.ok();
+                        continue;
+                    }
                 }
             }
             None => {
-                // no challenge = the device's ~30 s pairing window is closed;
-                // polls go unanswered while unauthenticated (95 polls → 0
-                // notifications, examples/auth_probe.rs). Disconnect and
-                // retry — each fresh connect opens a new window.
+                // 30 s quiet window with one stable connection covers a full
+                // PAIR REMOTE window; polls go unanswered while unauthenticated
+                // (95 polls → 0 notifications, examples/auth_probe.rs)
                 log_warn!(
-                    "[BLE] No handshake challenge — press MENU → PAIRING → PAIR REMOTE on the mixer (retry {}/{})",
+                    "[BLE] No handshake challenge in 30 s (retry {}/{}) — press MENU → PAIRING → PAIR REMOTE",
                     attempt + 1,
                     MAX_CONNECT_RETRIES
                 );
                 peripheral.disconnect().await.ok();
-                tokio::time::sleep(Duration::from_secs(5)).await;
+                tokio::time::sleep(Duration::from_secs(2)).await;
                 continue;
             }
         }
