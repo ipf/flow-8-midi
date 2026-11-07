@@ -79,11 +79,12 @@ pub enum MeterMsg {
     /// MeterUpdate (0x22): 15 f32 dB values — 0-9 inputs, 10/11 = L/R of the
     /// currently metered output — plus the rotation index of that output.
     Frame(Vec<f32>, usize),
-    /// Per-input level record [06 01 in_id out_id value cksum] (type 0x06 =
-    /// ChannelMaster): the input's post-fader contribution to the selected
-    /// output. in_id & 0x07 = input (0-6), out_id: 0x0F = Main, 0x18 = Mon 1,
-    /// 0x19 = Mon 2. value = raw 0-255 level (scale provisional).
-    Sample { input: u8, output: u8, value: f32 },
+    /// ChannelMaster push (0x06): fader position (raw fix8 u8) of `input`
+    /// feeding output bus `output` — the device's per-bus mix, not a signal
+    /// level. input: 0x00-0x06 channel ids (0x08 bit = stereo flag),
+    /// 0x0F = Main fader, 0x18/0x19 = Mon 1/2 faders. output: 0x0F Main,
+    /// 0x18 Mon 1, 0x19 Mon 2 (a channel feeding Mon = its send level).
+    Fader { input: u8, output: u8, value: u8 },
 }
 
 pub struct FLOW8Controller {

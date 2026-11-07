@@ -810,32 +810,44 @@ fn update_interface(controller: &mut FLOW8Controller, message: InterfaceMessage)
                                 }
                             }
                         }
-                        MeterMsg::Sample { input, output, value } => {
-                            // 6-byte ChannelMaster push: per-input level to the
-                            // selected output. Value scale provisional (linear
-                            // 0-255) until a calibrated capture pins it down;
-                            // the official lib converts via a 256-entry dB
-                            // table (table[0] = -177 = off, silence = 0x00).
-                            let linear = (value / 255.0).clamp(0.0, 1.0);
-                            if let Some(ch) =
-                                controller.channels.get_mut((input & 0x07) as usize)
-                            {
-                                ch.meter = linear.max(ch.meter);
-                            }
-                            let bus_id = match output {
-                                0x0F => 7, // Main (7 | stereo bit)
-                                0x18 => 8, // Mon 1
-                                0x19 => 9, // Mon 2
-                                o if (7..=9).contains(&o) => o,
-                                _ => 0,
+                        MeterMsg::Fader { input, output, value } => {
+                            // 0x06 push = fader position (raw fix8 u8), not a
+                            // signal level: mirror it into the UI. Fader ids:
+                            // 0x0F/0x18/0x19 = Main/Mon1/Mon2 bus faders,
+                            // else channel id (0x08 bit = stereo flag). A
+                            // channel feeding Mon1/Mon2 = its send level.
+                            let bus_fader = match input {
+                                0x0F => Some(7),
+                                0x18 => Some(8),
+                                0x19 => Some(9),
+                                _ => None,
                             };
-                            if (7..=9).contains(&bus_id) {
+                            if let Some(bus_id) = bus_fader {
                                 if let Some(bus) = controller
                                     .buses
                                     .iter_mut()
                                     .find(|b| b.id == bus_id)
                                 {
-                                    bus.meter = linear.max(bus.meter);
+                                    bus.bus_strip.level = value;
+                                    bus.bus_strip.level_synced = true;
+                                }
+                            } else if let Some(ch) =
+                                controller.channels.get_mut((input & 0x07) as usize)
+                            {
+                                match output {
+                                    0x0F => {
+                                        ch.channel_strip.level = value;
+                                        ch.channel_strip.level_synced = true;
+                                    }
+                                    0x18 => {
+                                        ch.sends.mon1 = value;
+                                        ch.sends.mon1_synced = true;
+                                    }
+                                    0x19 => {
+                                        ch.sends.mon2 = value;
+                                        ch.sends.mon2_synced = true;
+                                    }
+                                    _ => {}
                                 }
                             }
                         }

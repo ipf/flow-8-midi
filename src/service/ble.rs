@@ -199,7 +199,7 @@ async fn connect_peripheral(peripheral: &Peripheral) -> Result<(), String> {
     Ok(())
 }
 
-const MAX_CONNECT_RETRIES: u32 = 2;
+const MAX_CONNECT_RETRIES: u32 = 11;
 
 async fn connect_and_auth(
     peripheral: &Peripheral,
@@ -305,7 +305,20 @@ async fn connect_and_auth(
                     None => log_warn!("[BLE] No state dump after handshake reply"),
                 }
             }
-            None => log_warn!("[BLE] No handshake challenge received, proceeding anyway"),
+            None => {
+                // no challenge = the device's ~30 s pairing window is closed;
+                // polls go unanswered while unauthenticated (95 polls → 0
+                // notifications, examples/auth_probe.rs). Disconnect and
+                // retry — each fresh connect opens a new window.
+                log_warn!(
+                    "[BLE] No handshake challenge — press MENU → PAIRING → PAIR REMOTE on the mixer (retry {}/{})",
+                    attempt + 1,
+                    MAX_CONNECT_RETRIES
+                );
+                peripheral.disconnect().await.ok();
+                tokio::time::sleep(Duration::from_secs(5)).await;
+                continue;
+            }
         }
 
         log!("[BLE] Authenticated and session started");
@@ -944,15 +957,15 @@ pub fn start_meter_loop(meter_tx: mpsc::Sender<MeterMsg>, addr_hint: Option<Stri
             let mut rotation = 0usize;
             log!("[BLE] Meter loop running (ride-along stream)");
             // the device answers MeterRequest with level pushes (a pull
-            // model): the official app polls at meter rate (~20 Hz). One
+            // model): the official app polls at meter rate (~10 Hz). One
             // request after pairing produced a single 3-record burst, then
-            // silence — so poll every 250 ms and rotate the metered output
-            // (Main → Mon 1 → Mon 2) every 2 s = every 8th request.
+            // silence — so poll every 100 ms and rotate the metered output
+            // (Main → Mon 1 → Mon 2) every 2 s.
             write_struct_command(&peripheral, &characteristic, 0x41, &[7]).await;
             send_meter_poll(&peripheral, &characteristic, 0).await;
             let mut last_sent = std::time::Instant::now();
             loop {
-                let wait = Duration::from_millis(250).saturating_sub(last_sent.elapsed());
+                let wait = Duration::from_millis(100).saturating_sub(last_sent.elapsed());
                 let notification = match tokio::time::timeout(wait, notifications.next()).await {
                     Ok(Some(n)) => Some(n),
                     Ok(None) => {
@@ -1000,19 +1013,20 @@ pub fn start_meter_loop(meter_tx: mpsc::Sender<MeterMsg>, addr_hint: Option<Stri
                     {
                         // meter sample record: [06][01][in_id][out_id][value][cksum],
                         // checksum = byte-sum of the first 5 bytes (verified on
-                        // all captures). Type 0x06 = ChannelMaster push: the
-                        // input's level contribution to the selected output
-                        // (queueChannelMaster: getChannelById(cmd[25]),
-                        // setVolumedBForInputChannelId(cmd[24], value)).
-                        let _ = meter_tx.send(MeterMsg::Sample {
+                        // all captures). Type 0x06 = ChannelMaster push: a fader
+                        // position (queueChannelMaster: getChannelById(cmd[25]),
+                        // setVolumedBForInputChannelId(cmd[24], f32)) — arrives
+                        // when our MIDI-driven moves land or a physical fader
+                        // moves. Feeds fader sync, not the meters.
+                        let _ = meter_tx.send(MeterMsg::Fader {
                             input: v[2],
                             output: v[3],
-                            value: v[4] as f32,
+                            value: v[4],
                         });
                         if samples_logged < 60 {
                             samples_logged += 1;
                             log_debug!(
-                                "[BLE] Sample: in=0x{:02X} out=0x{:02X} val=0x{:02X}",
+                                "[BLE] Fader push: in=0x{:02X} out=0x{:02X} val=0x{:02X}",
                                 v[2],
                                 v[3],
                                 v[4]
