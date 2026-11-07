@@ -14,6 +14,7 @@ use crate::{log, log_debug, log_error, log_warn};
 const SERVICE_UUID: &str = "14839ad4-8d7e-415c-9a42-167340cf2339";
 const CHARACTERISTIC_UUID: &str = "0034594a-a8e7-4b1a-a6b1-cd5243059a57";
 const FLOW8_NAME_KEYWORD: &str = "FLOW";
+const FLOW8_NAME_EXACT: &str = "FLOW 8 LE";
 const SCAN_TIMEOUT: Duration = Duration::from_secs(12);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 
@@ -106,7 +107,10 @@ async fn get_adapter() -> Result<Adapter, String> {
         .ok_or_else(|| "No BLE adapter found".to_string())
 }
 
-async fn scan_for_flow8(adapter: &Adapter) -> Result<Peripheral, String> {
+async fn scan_for_flow8(
+    adapter: &Adapter,
+    addr_hint: Option<&str>,
+) -> Result<Peripheral, String> {
     log!("[BLE] Scanning for FLOW 8 ({}s timeout)...", SCAN_TIMEOUT.as_secs());
 
     adapter
@@ -125,7 +129,12 @@ async fn scan_for_flow8(adapter: &Adapter) -> Result<Peripheral, String> {
 
     log_debug!("[BLE] Found {} device(s) during scan", peripherals.len());
 
-    let mut name_match: Option<Peripheral> = None;
+    // the mixer advertises twice: the real GATT target "FLOW 8 LE" and a
+    // name-only "FLOW 8 Audio (...)" entry with no services (connecting to
+    // it fails with br-connection-key-missing). Exact name wins, then the
+    // main session's address, then keyword/service-UUID as fallback.
+    let mut exact: Option<Peripheral> = None;
+    let mut fuzzy: Option<Peripheral> = None;
     let target_svc = service_uuid();
 
     for p in peripherals {
@@ -138,24 +147,39 @@ async fn scan_for_flow8(adapter: &Adapter) -> Result<Peripheral, String> {
 
             log_debug!("[BLE]   device: \"{}\" addr={}", label, addr);
 
-            if name_match.is_none() {
+            if exact.is_none() {
+                if addr_hint == Some(addr.as_str()) {
+                    log!("[BLE] Matched main session address {}", addr);
+                    exact = Some(p.clone());
+                    continue;
+                }
+                if props.local_name.as_deref() == Some(FLOW8_NAME_EXACT) {
+                    log!("[BLE] Matched exact name: \"{}\" addr={}", label, addr);
+                    exact = Some(p.clone());
+                    continue;
+                }
+            }
+
+            if fuzzy.is_none() {
                 if let Some(ref name) = props.local_name {
                     if name.to_uppercase().contains(FLOW8_NAME_KEYWORD) {
-                        log!("[BLE] Matched by name: \"{}\"", name);
-                        name_match = Some(p.clone());
+                        log!("[BLE] Fuzzy name match: \"{}\" addr={}", name, addr);
+                        fuzzy = Some(p.clone());
                         continue;
                     }
                 }
 
                 if props.services.contains(&target_svc) {
                     log!("[BLE] Matched by Service UUID: \"{}\" addr={}", label, addr);
-                    name_match = Some(p.clone());
+                    fuzzy = Some(p.clone());
                 }
             }
         }
     }
 
-    name_match.ok_or_else(|| "FLOW 8 LE not found during scan".to_string())
+    exact
+        .or(fuzzy)
+        .ok_or_else(|| "FLOW 8 LE not found during scan".to_string())
 }
 
 async fn connect_peripheral(peripheral: &Peripheral) -> Result<(), String> {
@@ -496,7 +520,16 @@ async fn fetch_snapshot_names(
     // session subscribing the same characteristic receives reliably and the
     // CCCD is per-connection, so no re-pairing is needed)
     if let Some(meter_tx) = meter_tx {
-        start_meter_loop(meter_tx);
+        // pin the ride-along scan to this session's address: the mixer's
+        // second advertisement ("FLOW 8 Audio (...)") races the real one and
+        // has no GATT services
+        let addr = peripheral
+            .properties()
+            .await
+            .ok()
+            .flatten()
+            .map(|p| format!("{:?}", p.address));
+        start_meter_loop(meter_tx, addr);
     }
 
     // keep the subscription alive for the session (the meter stream shares it)
@@ -533,7 +566,7 @@ pub fn connect_flow8_ble(
         let _ = status_tx.send(BleStatus::Scanning);
         let adapter = get_adapter().await?;
 
-        let peripheral = match scan_for_flow8(&adapter).await {
+        let peripheral = match scan_for_flow8(&adapter, None).await {
             Ok(p) => p,
             Err(e) => {
                 let _ = status_tx.send(BleStatus::Error);
@@ -833,7 +866,7 @@ pub fn meter_db_to_linear(db: f32) -> f32 {
 /// Fresh BlueZ session subscribed to the same characteristic. Rides on the
 /// existing connection (device already connected by the main session — BlueZ
 /// shares it, no re-pairing).
-async fn ride_along_meter_stream() -> Option<(Peripheral, Characteristic, NotifyStream)> {
+async fn ride_along_meter_stream(addr_hint: Option<String>) -> Option<(Peripheral, Characteristic, NotifyStream)> {
     let manager = match Manager::new().await {
         Ok(m) => m,
         Err(e) => {
@@ -848,15 +881,15 @@ async fn ride_along_meter_stream() -> Option<(Peripheral, Characteristic, Notify
             return None;
         }
     };
-    let peripheral = match scan_for_flow8(&adapter).await {
+    let peripheral = match scan_for_flow8(&adapter, addr_hint.as_deref()).await {
         Ok(p) => p,
         Err(e) => {
             log_warn!("[BLE] Ride-along: scan failed: {}", e);
             return None;
         }
     };
-    if let Err(e) = peripheral.discover_services().await {
-        log_warn!("[BLE] Ride-along: discover failed: {}", e);
+    if let Err(e) = connect_peripheral(&peripheral).await {
+        log_warn!("[BLE] Ride-along: connect failed: {}", e);
         return None;
     }
     let target = characteristic_uuid();
@@ -887,7 +920,7 @@ async fn ride_along_meter_stream() -> Option<(Peripheral, Characteristic, Notify
     }
 }
 
-pub fn start_meter_loop(meter_tx: mpsc::Sender<MeterMsg>) {
+pub fn start_meter_loop(meter_tx: mpsc::Sender<MeterMsg>, addr_hint: Option<String>) {
     std::thread::spawn(move || {
         let rt = match tokio::runtime::Runtime::new() {
             Ok(rt) => rt,
@@ -897,7 +930,7 @@ pub fn start_meter_loop(meter_tx: mpsc::Sender<MeterMsg>) {
             use tokio_stream::StreamExt;
 
             let (peripheral, characteristic, mut notifications) = loop {
-                match ride_along_meter_stream().await {
+                match ride_along_meter_stream(addr_hint.clone()).await {
                     Some(x) => break x,
                     None => {
                         log_warn!("[BLE] Meter loop: ride-along failed, retrying in 10 s");
@@ -907,6 +940,7 @@ pub fn start_meter_loop(meter_tx: mpsc::Sender<MeterMsg>) {
             };
             let mut first_data = true;
             let mut other_logged = 0u32;
+            let mut samples_logged = 0u32;
             let mut rotation = 0usize;
             log!("[BLE] Meter loop running (ride-along stream)");
             // the device answers MeterRequest with level pushes (a pull
@@ -975,6 +1009,15 @@ pub fn start_meter_loop(meter_tx: mpsc::Sender<MeterMsg>) {
                             output: v[3],
                             value: v[4] as f32,
                         });
+                        if samples_logged < 60 {
+                            samples_logged += 1;
+                            log_debug!(
+                                "[BLE] Sample: in=0x{:02X} out=0x{:02X} val=0x{:02X}",
+                                v[2],
+                                v[3],
+                                v[4]
+                            );
+                        }
                     } else if v.len() == 5 && (v[0] == 0x01 || v[0] == 0x08) {
                         // mute/solo state echo from the device — handled locally
                     } else {
