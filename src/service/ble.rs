@@ -845,8 +845,13 @@ const METER_UPDATE_TYPE: u8 = 0x22;
 // patches METER_INDEX_TO_CHANNEL_INDEX[10]/[11] with the output's channel
 // index). SelectOutputChannel (0x41, [output id]) switches the device side.
 const METER_INPUT_IDS: [u8; 7] = [0x40, 0x41, 0x42, 0x43, 0xC4, 0xC5, 0xC6];
-/// metered outputs in rotation: Main (7), Mon 1 (8), Mon 2 (9) — bus id | 0xC0 (stereo)
-const METER_OUTPUT_BYTES: [u8; 3] = [0xC7, 0xC8, 0xC9];
+/// metered outputs in rotation: poll ids[7] = output channel id | 0x40 | 0x80
+/// (stereo) per setMeterOutputChannelId @0xb1564 — Main 0x0F→0xCF, Mon 1
+/// 0x18→0xD8, Mon 2 0x19→0xD9 (raw bus ids 7/8/9 are the wrong id space)
+const METER_OUTPUT_BYTES: [u8; 3] = [0xCF, 0xD8, 0xD9];
+/// output channel ids for the 0x41 meter-output select (getChannelById space:
+/// Main 0x0F, Mon 1 0x18, Mon 2 0x19 — proven by the 0x06 fader echoes)
+const METER_OUTPUT_CHANNEL_IDS: [u8; 3] = [0x0F, 0x18, 0x19];
 
 /// piecewise dB → linear 0..1 (−70 dB floor → 0, 0 dBFS → 1.0), from the official app
 pub fn meter_db_to_linear(db: f32) -> f32 {
@@ -897,7 +902,8 @@ pub fn start_meter_loop(
             // request after pairing produced a single 3-record burst, then
             // silence — so poll every 100 ms and rotate the metered output
             // (Main → Mon 1 → Mon 2) every 2 s.
-            write_struct_command(&peripheral, &characteristic, 0x41, &[7]).await;
+            write_struct_command(&peripheral, &characteristic, 0x41, &[METER_OUTPUT_CHANNEL_IDS[0]])
+                .await;
             send_meter_poll(&peripheral, &characteristic, 0).await;
             let mut last_sent = std::time::Instant::now();
             loop {
@@ -987,9 +993,10 @@ pub fn start_meter_loop(
                 }
                 if last_sent.elapsed() >= Duration::from_secs(2) {
                     rotation += 1;
-                    let out_id = 7 + (rotation % METER_OUTPUT_BYTES.len()) as u8;
-                    log_debug!("[BLE] Meter rotation → output {}", out_id);
-                    write_struct_command(&peripheral, &characteristic, 0x41, &[out_id]).await;
+                    let rot = rotation % METER_OUTPUT_CHANNEL_IDS.len();
+                    let ch_id = METER_OUTPUT_CHANNEL_IDS[rot];
+                    log_debug!("[BLE] Meter rotation → output 0x{:02X}", ch_id);
+                    write_struct_command(&peripheral, &characteristic, 0x41, &[ch_id]).await;
                     last_sent = std::time::Instant::now();
                 } else {
                     // poll: request levels for the currently selected output
