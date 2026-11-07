@@ -107,10 +107,7 @@ async fn get_adapter() -> Result<Adapter, String> {
         .ok_or_else(|| "No BLE adapter found".to_string())
 }
 
-async fn scan_for_flow8(
-    adapter: &Adapter,
-    addr_hint: Option<&str>,
-) -> Result<Peripheral, String> {
+async fn scan_for_flow8(adapter: &Adapter) -> Result<Peripheral, String> {
     log!("[BLE] Scanning for FLOW 8 ({}s timeout)...", SCAN_TIMEOUT.as_secs());
 
     adapter
@@ -148,11 +145,6 @@ async fn scan_for_flow8(
             log_debug!("[BLE]   device: \"{}\" addr={}", label, addr);
 
             if exact.is_none() {
-                if addr_hint == Some(addr.as_str()) {
-                    log!("[BLE] Matched main session address {}", addr);
-                    exact = Some(p.clone());
-                    continue;
-                }
                 if props.local_name.as_deref() == Some(FLOW8_NAME_EXACT) {
                     log!("[BLE] Matched exact name: \"{}\" addr={}", label, addr);
                     exact = Some(p.clone());
@@ -528,21 +520,12 @@ async fn fetch_snapshot_names(
     })
     .await;
 
-    // the meter loop uses its OWN ride-along BlueZ session (the main
-    // session's notification stream starves after the names flow — a second
-    // session subscribing the same characteristic receives reliably and the
-    // CCCD is per-connection, so no re-pairing is needed)
+    // the meter loop rides THIS session's connection: it is authenticated
+    // (the handshake is per-connection and the mixer answers meter polls only
+    // on an authenticated one — the old separate ride-along session never
+    // handshook and its polls went unanswered)
     if let Some(meter_tx) = meter_tx {
-        // pin the ride-along scan to this session's address: the mixer's
-        // second advertisement ("FLOW 8 Audio (...)") races the real one and
-        // has no GATT services
-        let addr = peripheral
-            .properties()
-            .await
-            .ok()
-            .flatten()
-            .map(|p| format!("{:?}", p.address));
-        start_meter_loop(meter_tx, addr);
+        start_meter_loop(peripheral.clone(), characteristic.clone(), meter_tx);
     }
 
     // keep the subscription alive for the session (the meter stream shares it)
@@ -579,7 +562,7 @@ pub fn connect_flow8_ble(
         let _ = status_tx.send(BleStatus::Scanning);
         let adapter = get_adapter().await?;
 
-        let peripheral = match scan_for_flow8(&adapter, None).await {
+        let peripheral = match scan_for_flow8(&adapter).await {
             Ok(p) => p,
             Err(e) => {
                 let _ = status_tx.send(BleStatus::Error);
@@ -868,72 +851,15 @@ pub fn meter_db_to_linear(db: f32) -> f32 {
     v / 100.0
 }
 
-/// Run the meter receive loop on a thread, using the notification stream that
-/// fetch_snapshot_names already opened (a second subscribe()/notifications()
-/// call stalls on BlueZ). Sends MeterRequest (0x21), then parses
-/// MeterUpdate (0x22) notifications into 15 raw dB floats; re-requests
-/// after 5 s of silence.
-/// Run the meter receive loop on its own thread. Opens a fresh ride-along
-/// BlueZ session (see call site) subscribed to the same characteristic,
-/// sends MeterRequest (0x21) and parses MeterUpdate (0x22) notifications.
-/// Fresh BlueZ session subscribed to the same characteristic. Rides on the
-/// existing connection (device already connected by the main session — BlueZ
-/// shares it, no re-pairing).
-async fn ride_along_meter_stream(addr_hint: Option<String>) -> Option<(Peripheral, Characteristic, NotifyStream)> {
-    let manager = match Manager::new().await {
-        Ok(m) => m,
-        Err(e) => {
-            log_warn!("[BLE] Ride-along: manager failed: {}", e);
-            return None;
-        }
-    };
-    let adapter = match manager.adapters().await.ok()?.into_iter().next() {
-        Some(a) => a,
-        None => {
-            log_warn!("[BLE] Ride-along: no adapter");
-            return None;
-        }
-    };
-    let peripheral = match scan_for_flow8(&adapter, addr_hint.as_deref()).await {
-        Ok(p) => p,
-        Err(e) => {
-            log_warn!("[BLE] Ride-along: scan failed: {}", e);
-            return None;
-        }
-    };
-    if let Err(e) = connect_peripheral(&peripheral).await {
-        log_warn!("[BLE] Ride-along: connect failed: {}", e);
-        return None;
-    }
-    let target = characteristic_uuid();
-    let characteristic = match peripheral
-        .characteristics()
-        .into_iter()
-        .find(|c| c.uuid == target)
-    {
-        Some(c) => c,
-        None => {
-            log_warn!("[BLE] Ride-along: characteristic not found");
-            return None;
-        }
-    };
-    if let Err(e) = peripheral.subscribe(&characteristic).await {
-        log_warn!("[BLE] Ride-along: subscribe failed: {}", e);
-        return None;
-    }
-    match peripheral.notifications().await {
-        Ok(s) => {
-            log!("[BLE] Ride-along: stream established");
-            Some((peripheral, characteristic, s))
-        }
-        Err(e) => {
-            log_warn!("[BLE] Ride-along: notifications failed: {}", e);
-            None
-        }
-    }
-}
-
-pub fn start_meter_loop(meter_tx: mpsc::Sender<MeterMsg>, addr_hint: Option<String>) {
+/// Run the meter receive loop on its own thread, riding the main session's
+/// authenticated connection (a second subscribe()/notifications() call on the
+/// same connection is fine — the CCCD is per-connection and the mixer answers
+/// meter polls only on an authenticated one).
+pub fn start_meter_loop(
+    peripheral: Peripheral,
+    characteristic: Characteristic,
+    meter_tx: mpsc::Sender<MeterMsg>,
+) {
     std::thread::spawn(move || {
         let rt = match tokio::runtime::Runtime::new() {
             Ok(rt) => rt,
@@ -942,11 +868,22 @@ pub fn start_meter_loop(meter_tx: mpsc::Sender<MeterMsg>, addr_hint: Option<Stri
         rt.block_on(async move {
             use tokio_stream::StreamExt;
 
-            let (peripheral, characteristic, mut notifications) = loop {
-                match ride_along_meter_stream(addr_hint.clone()).await {
-                    Some(x) => break x,
-                    None => {
-                        log_warn!("[BLE] Meter loop: ride-along failed, retrying in 10 s");
+            let mut notifications = loop {
+                match peripheral.subscribe(&characteristic).await {
+                    Ok(_) => {}
+                    Err(e) => {
+                        log_warn!("[BLE] Meter loop: subscribe failed: {} — retrying in 10 s", e);
+                        tokio::time::sleep(Duration::from_secs(10)).await;
+                        continue;
+                    }
+                }
+                match peripheral.notifications().await {
+                    Ok(s) => break s,
+                    Err(e) => {
+                        log_warn!(
+                            "[BLE] Meter loop: notification stream failed: {} — retrying in 10 s",
+                            e
+                        );
                         tokio::time::sleep(Duration::from_secs(10)).await;
                     }
                 }
@@ -955,7 +892,7 @@ pub fn start_meter_loop(meter_tx: mpsc::Sender<MeterMsg>, addr_hint: Option<Stri
             let mut other_logged = 0u32;
             let mut samples_logged = 0u32;
             let mut rotation = 0usize;
-            log!("[BLE] Meter loop running (ride-along stream)");
+            log!("[BLE] Meter loop running (main session stream)");
             // the device answers MeterRequest with level pushes (a pull
             // model): the official app polls at meter rate (~10 Hz). One
             // request after pairing produced a single 3-record burst, then
