@@ -20,7 +20,7 @@ use service::midi_mapper::match_midi_command;
 use service::sysex_parser;
 use model::{
     channels::BusType,
-    flow8::{FLOW8Controller, RenameTarget},
+    flow8::{FLOW8Controller, MeterMsg, RenameTarget},
     message::InterfaceMessage,
     page::Page,
 };
@@ -780,31 +780,64 @@ fn update_interface(controller: &mut FLOW8Controller, message: InterfaceMessage)
                 bus.meter *= 0.995;
             }
             if let Some(ref meter_rx) = controller.meter_receiver {
-                while let Ok((values, out_rot)) = meter_rx.try_recv() {
-                    // floats 0-9 (official index table): 0-3 = inputs 1-4,
-                    // 4/5 = input5 L/R, 6/7 = input6 L/R, 8/9 = USB/BT L/R
-                    for (i, ch) in controller.channels.iter_mut().enumerate() {
-                        let db = match i {
-                            0..=3 => values.get(i).copied(),
-                            4 => values.get(4).zip(values.get(5)).map(|(l, r)| l.max(*r)),
-                            5 => values.get(6).zip(values.get(7)).map(|(l, r)| l.max(*r)),
-                            _ => values.get(8).zip(values.get(9)).map(|(l, r)| l.max(*r)),
-                        };
-                        if let Some(db) = db {
-                            let linear = crate::service::ble::meter_db_to_linear(db);
-                            ch.meter = linear.max(ch.meter);
+                while let Ok(msg) = meter_rx.try_recv() {
+                    match msg {
+                        MeterMsg::Frame(values, out_rot) => {
+                            // floats 0-9 (official index table): 0-3 = inputs 1-4,
+                            // 4/5 = input5 L/R, 6/7 = input6 L/R, 8/9 = USB/BT L/R
+                            for (i, ch) in controller.channels.iter_mut().enumerate() {
+                                let db = match i {
+                                    0..=3 => values.get(i).copied(),
+                                    4 => values.get(4).zip(values.get(5)).map(|(l, r)| l.max(*r)),
+                                    5 => values.get(6).zip(values.get(7)).map(|(l, r)| l.max(*r)),
+                                    _ => values.get(8).zip(values.get(9)).map(|(l, r)| l.max(*r)),
+                                };
+                                if let Some(db) = db {
+                                    let linear = crate::service::ble::meter_db_to_linear(db);
+                                    ch.meter = linear.max(ch.meter);
+                                }
+                            }
+                            // floats 10/11 = L/R of the rotated metered output
+                            // (rotation 0/1/2 → bus id 7/8/9 = Main/Mon 1/Mon 2)
+                            if let (Some(l), Some(r)) = (values.get(10), values.get(11)) {
+                                let db = l.max(*r);
+                                let bus_id = 7 + out_rot as u8;
+                                if let Some(bus) =
+                                    controller.buses.iter_mut().find(|b| b.id == bus_id)
+                                {
+                                    bus.meter =
+                                        crate::service::ble::meter_db_to_linear(db).max(bus.meter);
+                                }
+                            }
                         }
-                    }
-                    // floats 10/11 = L/R of the rotated metered output
-                    // (rotation 0/1/2 → bus id 7/8/9 = Main/Mon 1/Mon 2)
-                    if let (Some(l), Some(r)) = (values.get(10), values.get(11)) {
-                        let db = l.max(*r);
-                        let bus_id = 7 + out_rot as u8;
-                        if let Some(bus) =
-                            controller.buses.iter_mut().find(|b| b.id == bus_id)
-                        {
-                            bus.meter =
-                                crate::service::ble::meter_db_to_linear(db).max(bus.meter);
+                        MeterMsg::Sample { input, output, value } => {
+                            // 6-byte ChannelMaster push: per-input level to the
+                            // selected output. Value scale provisional (linear
+                            // 0-255) until a calibrated capture pins it down;
+                            // the official lib converts via a 256-entry dB
+                            // table (table[0] = -177 = off, silence = 0x00).
+                            let linear = (value / 255.0).clamp(0.0, 1.0);
+                            if let Some(ch) =
+                                controller.channels.get_mut((input & 0x07) as usize)
+                            {
+                                ch.meter = linear.max(ch.meter);
+                            }
+                            let bus_id = match output {
+                                0x0F => 7, // Main (7 | stereo bit)
+                                0x18 => 8, // Mon 1
+                                0x19 => 9, // Mon 2
+                                o if (7..=9).contains(&o) => o,
+                                _ => 0,
+                            };
+                            if (7..=9).contains(&bus_id) {
+                                if let Some(bus) = controller
+                                    .buses
+                                    .iter_mut()
+                                    .find(|b| b.id == bus_id)
+                                {
+                                    bus.meter = linear.max(bus.meter);
+                                }
+                            }
                         }
                     }
                 }

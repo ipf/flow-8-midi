@@ -8,6 +8,7 @@ use std::sync::mpsc;
 use std::time::Duration;
 use uuid::Uuid;
 
+use crate::model::flow8::MeterMsg;
 use crate::{log, log_debug, log_error, log_warn};
 
 const SERVICE_UUID: &str = "14839ad4-8d7e-415c-9a42-167340cf2339";
@@ -418,7 +419,7 @@ async fn read_device_settings(
 async fn fetch_snapshot_names(
     peripheral: &Peripheral,
     characteristic: &Characteristic,
-    meter_tx: Option<mpsc::Sender<(Vec<f32>, usize)>>,
+    meter_tx: Option<mpsc::Sender<crate::model::flow8::MeterMsg>>,
     settings_tx: Option<mpsc::Sender<(u8, u8)>>,
     mut notification_stream: NotifyStream,
 ) -> Result<Vec<Option<String>>, String> {
@@ -523,7 +524,7 @@ async fn fetch_snapshot_names(
 pub fn connect_flow8_ble(
     status_tx: mpsc::Sender<BleStatus>,
     snapshot_tx: mpsc::Sender<Vec<Option<String>>>,
-    meter_tx: mpsc::Sender<(Vec<f32>, usize)>,
+    meter_tx: mpsc::Sender<crate::model::flow8::MeterMsg>,
     settings_tx: mpsc::Sender<(u8, u8)>,
 ) -> Result<BleConnection, String> {
     let rt = tokio::runtime::Runtime::new().map_err(|e| format!("Tokio runtime error: {}", e))?;
@@ -886,7 +887,7 @@ async fn ride_along_meter_stream() -> Option<(Peripheral, Characteristic, Notify
     }
 }
 
-pub fn start_meter_loop(meter_tx: mpsc::Sender<(Vec<f32>, usize)>) {
+pub fn start_meter_loop(meter_tx: mpsc::Sender<MeterMsg>) {
     std::thread::spawn(move || {
         let rt = match tokio::runtime::Runtime::new() {
             Ok(rt) => rt,
@@ -927,27 +928,9 @@ pub fn start_meter_loop(meter_tx: mpsc::Sender<(Vec<f32>, usize)>) {
                     Err(_) => None,
                 };
                 if let Some(notification) = notification {
-                    if notification.value.is_empty()
-                        || notification.value[0] != METER_UPDATE_TYPE
-                    {
-                        // hex-log the first unknowns: the real meter update
-                        // format reveals itself here on first flow
-                        if other_logged < 100 {
-                            other_logged += 1;
-                            let hex: Vec<String> = notification
-                                .value
-                                .iter()
-                                .map(|b| format!("{:02X}", b))
-                                .collect();
-                            log_debug!(
-                                "[BLE] Meter loop: other notification len={} {}",
-                                notification.value.len(),
-                                hex.join(" ")
-                            );
-                        }
-                    } else {
+                    let v = &notification.value;
+                    if v.first() == Some(&METER_UPDATE_TYPE) {
                         // payload = [0x22][15 × f32 LE dB][u16 packed GR at +60]
-                        let v = &notification.value;
                         let mut values = Vec::with_capacity(15);
                         for i in 0..15 {
                             let off = 1 + i * 4;
@@ -970,7 +953,43 @@ pub fn start_meter_loop(meter_tx: mpsc::Sender<(Vec<f32>, usize)>) {
                                 floats.join(" ")
                             );
                         }
-                        let _ = meter_tx.send((values, rotation % METER_OUTPUT_BYTES.len()));
+                        let _ = meter_tx.send(MeterMsg::Frame(
+                            values,
+                            rotation % METER_OUTPUT_BYTES.len(),
+                        ));
+                    } else if v.len() == 6
+                        && v[0] == 0x06
+                        && v[..5]
+                            .iter()
+                            .fold(0u8, |a, b| a.wrapping_add(*b))
+                            == v[5]
+                    {
+                        // meter sample record: [06][01][in_id][out_id][value][cksum],
+                        // checksum = byte-sum of the first 5 bytes (verified on
+                        // all captures). Type 0x06 = ChannelMaster push: the
+                        // input's level contribution to the selected output
+                        // (queueChannelMaster: getChannelById(cmd[25]),
+                        // setVolumedBForInputChannelId(cmd[24], value)).
+                        let _ = meter_tx.send(MeterMsg::Sample {
+                            input: v[2],
+                            output: v[3],
+                            value: v[4] as f32,
+                        });
+                    } else if v.len() == 5 && (v[0] == 0x01 || v[0] == 0x08) {
+                        // mute/solo state echo from the device — handled locally
+                    } else {
+                        // hex-log the first unknowns: anything else that flows
+                        // on a live session reveals itself here
+                        if other_logged < 100 {
+                            other_logged += 1;
+                            let hex: Vec<String> =
+                                v.iter().map(|b| format!("{:02X}", b)).collect();
+                            log_debug!(
+                                "[BLE] Meter loop: other notification len={} {}",
+                                v.len(),
+                                hex.join(" ")
+                            );
+                        }
                     }
                 }
                 if last_sent.elapsed() >= Duration::from_secs(2) {
