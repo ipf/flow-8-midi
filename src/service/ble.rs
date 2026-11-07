@@ -262,17 +262,16 @@ async fn connect_and_auth(
             }
         };
 
-        // The official app sends NOTHING here (XAIRDevice.java: it enters
-        // WaitingForHandshake after service discovery and writes only when the
-        // mixer initiates). The mixer sends the 0x37 challenge, we reply
-        // 0x39+key, it confirms with 0x38, and only then does the app send the
-        // 0x37 session-start (native onHandShakeReplyCommandReceived queues a
-        // 0x37 on 0x38). Writing anything first desyncs the mixer's state
-        // machine — it never challenges a connection that talks first.
-        log!("[BLE] Waiting for handshake challenge — press MENU → PAIRING → PAIR REMOTE...");
-        match wait_for_cmd(&mut stream, 0x37, Duration::from_secs(30)).await {
+        // The mixer initiates the handshake: it streams a 0x35 challenge
+        // every 500 ms (dispatch arm 0xB1060 → onHandShakeCommandReceived,
+        // which queues the 0x39+key reply). We reply 0x39+key, the mixer
+        // confirms with 0x36 (onHandShakeReplyCommandReceived), we send the
+        // 0x37 session-start, and the mixer follows with the 0x38 state dump.
+        // 0x37 has NO RX arm in the dispatch table — waiting for it was wrong.
+        log!("[BLE] Waiting for handshake challenge (0x35)...");
+        match wait_for_cmd(&mut stream, 0x35, Duration::from_secs(30)).await {
             Some(_) => {
-                log!("[BLE] Handshake challenge received, replying with auth key...");
+                log!("[BLE] Handshake challenge (0x35) received, replying with auth key...");
                 let reply: Vec<u8> = [0x39]
                     .iter()
                     .copied()
@@ -284,21 +283,27 @@ async fn connect_and_auth(
                     Ok(Err(e)) => log_warn!("[BLE] Handshake reply write failed: {}", e),
                     Err(_) => log_debug!("[BLE] Handshake reply: no ack (packet still delivered)"),
                 }
-                // device confirms with the 0x38 state dump
-                match wait_for_cmd(&mut stream, 0x38, Duration::from_secs(5)).await {
+                // mixer confirms with the 0x36 handshake reply
+                match wait_for_cmd(&mut stream, 0x36, Duration::from_secs(5)).await {
                     Some(_) => {
-                        log!("[BLE] State dump received — sending session start...");
+                        log!("[BLE] Handshake reply (0x36) — sending session start...");
                         if let Err(e) = peripheral
                             .write(&characteristic, &SESSION_START_PACKET, WriteType::WithResponse)
                             .await
                         {
                             log_warn!("[BLE] Session start write failed: {}", e);
                         }
+                        match wait_for_cmd(&mut stream, 0x38, Duration::from_secs(5)).await {
+                            Some(_) => {
+                                log!("[BLE] State dump (0x38) received — session established")
+                            }
+                            None => log_warn!("[BLE] No state dump (0x38) after session start"),
+                        }
                         log!("[BLE] Authenticated and session started");
                         return Ok((characteristic, stream));
                     }
                     None => {
-                        last_err = "No state dump after handshake reply".to_string();
+                        last_err = "No handshake reply (0x36) after auth".to_string();
                         log_warn!("[BLE] {}", last_err);
                         peripheral.disconnect().await.ok();
                         continue;
@@ -306,9 +311,8 @@ async fn connect_and_auth(
                 }
             }
             None => {
-                // 30 s quiet window with one stable connection covers a full
-                // PAIR REMOTE window; polls go unanswered while unauthenticated
-                // (95 polls → 0 notifications, examples/auth_probe.rs)
+                // 30 s window covers a PAIR REMOTE press; the mixer streams
+                // its 0x35 challenge every 500 ms once it has no remote
                 log_warn!(
                     "[BLE] No handshake challenge in 30 s (retry {}/{}) — press MENU → PAIRING → PAIR REMOTE",
                     attempt + 1,
