@@ -6,6 +6,7 @@ use crate::model::{
 };
 use crate::view::widgets::{
     h_slider, format_level, format_limiter, format_send, sync_dot, sync_label, v_slider,
+    on_right_click, LEVEL_ZERO_DB,
 };
 use iced::{
     widget::{button, column, container, row, text, Column, Row, Space},
@@ -61,9 +62,12 @@ pub fn view_sends(controller: &FLOW8Controller) -> Element<'_, InterfaceMessage>
     master_col = master_col.push(
         column![
             sync_label("Level", 12.0, bus.bus_strip.level_synced),
-            v_slider(1..=127, bus.bus_strip.level, MASTER_FADER_HEIGHT, move |v| {
-                InterfaceMessage::BusLevel(bus_idx, bus_id, v)
-            }, format_level(bus.bus_strip.level)),
+            on_right_click(
+                v_slider(1..=127, bus.bus_strip.level, MASTER_FADER_HEIGHT, move |v| {
+                    InterfaceMessage::BusLevel(bus_idx, bus_id, v)
+                }, format_level(bus.bus_strip.level)),
+                InterfaceMessage::BusLevel(bus_idx, bus_id, LEVEL_ZERO_DB),
+            ),
             text(format_level(bus.bus_strip.level)).size(10),
         ]
         .align_x(Center)

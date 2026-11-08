@@ -40,7 +40,6 @@ pub fn match_midi_command(
         | InterfaceMessage::RenameSubmit
         | InterfaceMessage::RenameCancel
         | InterfaceMessage::DeleteSnapshot(_)
-        | InterfaceMessage::LoadInputPreset(_, _)
         | InterfaceMessage::SetDeviceSetting(_, _)
         | InterfaceMessage::FxRouting(_, _, _, _)
         | InterfaceMessage::FxParam1Send(_)

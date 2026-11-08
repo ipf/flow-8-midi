@@ -3,7 +3,10 @@ use crate::model::{
     flow8::FLOW8Controller,
     message::InterfaceMessage,
 };
-use crate::view::widgets::{sync_label, v_slider, format_level, format_percent, UNSYNCED_COLOR};
+use crate::view::widgets::{
+    sync_label, v_slider, format_level, format_percent, on_right_click, LEVEL_ZERO_DB,
+    UNSYNCED_COLOR,
+};
 use iced::{
     widget::{button, checkbox, column, container, row, slider, text, tooltip, Column, Row, Space},
     Center, Element, Fill,
@@ -151,9 +154,12 @@ fn build_fx_bus_fader(bus: Option<&Bus>) -> Element<'_, InterfaceMessage> {
             text(bus.label()).size(12),
             Space::new().height(4),
             sync_label("Level", 10.0, bus.bus_strip.level_synced),
-            v_slider(1..=127, bus.bus_strip.level, FX_BUS_FADER_HEIGHT, move |v| {
-                InterfaceMessage::BusLevel(bus_idx, bus_id, v)
-            }, format_level(bus.bus_strip.level)),
+            on_right_click(
+                v_slider(1..=127, bus.bus_strip.level, FX_BUS_FADER_HEIGHT, move |v| {
+                    InterfaceMessage::BusLevel(bus_idx, bus_id, v)
+                }, format_level(bus.bus_strip.level)),
+                InterfaceMessage::BusLevel(bus_idx, bus_id, LEVEL_ZERO_DB),
+            ),
         ]
         .align_x(Center)
         .spacing(4)

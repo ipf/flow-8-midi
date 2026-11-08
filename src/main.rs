@@ -285,9 +285,11 @@ fn send_fx_setup(controller: &FLOW8Controller, fx_idx: u8) {
         .nth(fx_idx as usize)
         .map(|b| b.id)
     else {
+        log_warn!("[BLE] FX setup: no FX bus in buses list for slot {}", fx_idx + 1);
         return;
     };
     let Some(f) = controller.fx_slots.get(fx_idx as usize) else {
+        log_warn!("[BLE] FX setup: fx slot {} missing", fx_idx + 1);
         return;
     };
     let (p1, p2, p3) = (f.param1, f.param2, f.param3);
@@ -295,6 +297,7 @@ fn send_fx_setup(controller: &FLOW8Controller, fx_idx: u8) {
     let conn_arc = controller.ble_connection.clone();
     std::thread::spawn(move || {
         let Ok(guard) = conn_arc.lock() else {
+            log_warn!("[BLE] FX setup: connection lock poisoned");
             return;
         };
         if let Some(conn) = guard.as_ref() {
@@ -303,6 +306,8 @@ fn send_fx_setup(controller: &FLOW8Controller, fx_idx: u8) {
             } else {
                 log!("[BLE] FX {} setup sent (params + routing)", fx_idx + 1);
             }
+        } else {
+            log_warn!("[BLE] FX setup: no BLE connection");
         }
     });
 }
@@ -411,41 +416,6 @@ fn update_interface(controller: &mut FLOW8Controller, message: InterfaceMessage)
             let c = &mut controller.channels[ch as usize];
             c.channel_strip.gain = value;
             c.channel_strip.gain_synced = true;
-        }
-        InterfaceMessage::LoadInputPreset(ch_id, idx) => {
-            let Some(preset) = model::presets::INPUT_PRESETS.get(idx as usize) else {
-                return;
-            };
-            // optimistic local update (the official app does the same:
-            // preset values land in the model immediately)
-            if let Some(c) = controller.channels.iter_mut().find(|c| c.id == ch_id) {
-                c.name = preset.name.to_string();
-                c.name_synced = true;
-                c.channel_strip.gain = sysex_parser::preset_gain_to_cc(preset.gain_db as f32);
-                c.channel_strip.gain_synced = true;
-                c.channel_strip.low_cut = sysex_parser::preset_hpf_to_cc(preset.hpf_hz);
-                c.channel_strip.low_cut_synced = true;
-                c.channel_strip.compressor = 0; // all presets: comp off
-                c.channel_strip.compressor_synced = true;
-                c.channel_strip.balance = 64; // pan center
-                c.channel_strip.balance_synced = true;
-                c.phantom_pwr.is_on = preset.phantom;
-                c.phantom_synced = true;
-            }
-            // full input-channel state (0x17) over BLE, incl. the label rename
-            let conn_arc = controller.ble_connection.clone();
-            std::thread::spawn(move || {
-                let Ok(guard) = conn_arc.lock() else {
-                    return;
-                };
-                if let Some(conn) = guard.as_ref() {
-                    let preset = &model::presets::INPUT_PRESETS[idx as usize];
-                    match ble::send_input_preset(conn, ch_id, preset) {
-                        Ok(_) => log!("[BLE] Input preset '{}' sent to ch {}", preset.name, ch_id),
-                        Err(e) => log_warn!("[BLE] Input preset send failed: {}", e),
-                    }
-                }
-            });
         }
         InterfaceMessage::Level(ch, value) => {
             let c = &mut controller.channels[ch as usize];

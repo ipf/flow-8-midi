@@ -13,8 +13,6 @@ pub enum InterfaceMessage {
     Solo(ChannelId, bool),
     Gain(ChannelId, u8),
     Level(ChannelId, u8),
-    /// Apply an input preset (index into model::presets::INPUT_PRESETS)
-    LoadInputPreset(ChannelId, u8),
     Balance(ChannelId, u8),
     LowCut(ChannelId, u8),
     Compressor(ChannelId, u8),

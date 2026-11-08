@@ -4,13 +4,13 @@ use crate::model::{
     message::InterfaceMessage,
 };
 use crate::view::widgets::{
-    knob, sync_dot, sync_label, v_slider,
+    knob, sync_dot, sync_label, v_slider, on_right_click, LEVEL_ZERO_DB,
     format_gain, format_level, format_pan, format_comp, format_lowcut, format_limiter,
     format_eq, format_send,
 };
 use iced::{
     widget::{
-        button, column, container, pick_list, row, text, text_input, tooltip,
+        button, column, container, row, text, text_input, tooltip,
         tooltip::Position, Column, Space,
     },
     Center, Color, Element, Fill, Length,
@@ -184,28 +184,6 @@ fn build_channel_strip<'a>(
     let strip = &channel.channel_strip;
     let ch_id = channel.id;
 
-    // ── input preset picker (the 8 official presets) ──
-    {
-        let preset_names: Vec<&'static str> =
-            crate::model::presets::INPUT_PRESETS.iter().map(|p| p.name).collect();
-        let selected = crate::model::presets::INPUT_PRESETS
-            .iter()
-            .find(|p| p.name == channel.name.as_str())
-            .map(|p| p.name);
-        col = col.push(
-            pick_list(preset_names, selected, move |name| {
-                let idx = crate::model::presets::INPUT_PRESETS
-                    .iter()
-                    .position(|p| p.name == name)
-                    .unwrap_or(0) as u8;
-                InterfaceMessage::LoadInputPreset(ch_id, idx)
-            })
-            .text_size(10)
-            .padding([2, 4])
-            .width(Fill),
-        );
-    }
-
     // ── SSL-style strip: gain / EQ / dynamics / sends knobs above the fader ──
     if channel.has_gain() {
         col = col.push(knob_slot(
@@ -305,9 +283,12 @@ fn build_channel_strip<'a>(
             sync_label("Level", 12.0, strip.level_synced),
             clip_dot(channel.clip_time),
             row![
-                v_slider(1..=127, strip.level, FADER_HEIGHT, move |v| {
-                    InterfaceMessage::Level(ch_id, v)
-                }, format_level(strip.level)),
+                on_right_click(
+                    v_slider(1..=127, strip.level, FADER_HEIGHT, move |v| {
+                        InterfaceMessage::Level(ch_id, v)
+                    }, format_level(strip.level)),
+                    InterfaceMessage::Level(ch_id, LEVEL_ZERO_DB),
+                ),
                 meter_bar(channel.meter),
             ]
             .align_y(iced::alignment::Vertical::Bottom)
@@ -541,9 +522,12 @@ fn build_bus_strip(bus: &Bus) -> Element<'_, InterfaceMessage> {
             // mirrors the channel strips' clip light slot so Level labels align
             Space::new().height(Length::Fixed(12.0)),
             row![
-                v_slider(1..=127, bus.bus_strip.level, BUS_FADER_HEIGHT, move |v| {
-                    InterfaceMessage::BusLevel(bus_idx, bus_id, v)
-                }, format_level(bus.bus_strip.level)),
+                on_right_click(
+                    v_slider(1..=127, bus.bus_strip.level, BUS_FADER_HEIGHT, move |v| {
+                        InterfaceMessage::BusLevel(bus_idx, bus_id, v)
+                    }, format_level(bus.bus_strip.level)),
+                    InterfaceMessage::BusLevel(bus_idx, bus_id, LEVEL_ZERO_DB),
+                ),
                 meter_bar(bus.meter),
             ]
             .align_y(iced::alignment::Vertical::Bottom)

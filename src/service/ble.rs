@@ -666,25 +666,16 @@ async fn write_packet(peripheral: &Peripheral, characteristic: &Characteristic, 
     }
 }
 
-/// Compact commands (0x05 rename, 0x07 names, 0x12/0x20 snapshot, 0x19/0x32
-/// save/rename, 0x25 setting, 0x40 tempo): fields live at struct[1..],
-/// so the bare form is just [opcode][fields].
+/// Compact commands (0x05 rename, 0x12/0x20 snapshot, 0x19/0x32 save/rename,
+/// 0x25 setting, 0x40 tempo): same official framing as the struct commands —
+/// every app command goes through xairbt_out_queue_write_cmd.
 pub fn send_ble_command(conn: &BleConnection, opcode: u8, payload: &[u8]) -> Result<(), String> {
-    let rt = tokio::runtime::Runtime::new().map_err(|e| format!("Tokio runtime error: {}", e))?;
-    rt.block_on(async {
-        let mut packet = Vec::with_capacity(payload.len() + 1);
-        packet.push(opcode);
-        packet.extend_from_slice(payload);
-        write_packet(&conn.peripheral, &conn.characteristic, &packet, opcode).await;
-        Ok(())
-    })
+    send_ble_struct_command(conn, opcode, payload)
 }
 
 /// Struct commands (0x11 FX setup, 0x17 input preset, 0x21 meter request,
-/// 0x31 FX preset, 0x41 select output) read their fields at struct[24..]:
-/// the compact bare form is silently dropped (data lands at struct[1]).
-/// Send the padded bare form AND the official chunked form
-/// ([len u16][type][idx][count][seq] + ≤32-byte slices of the same fields).
+/// 0x31 FX preset, 0x41 select output): go out in the official 6-byte-header
+/// chunked framing (see write_struct_command).
 pub fn send_ble_struct_command(conn: &BleConnection, opcode: u8, payload: &[u8]) -> Result<(), String> {
     let rt = tokio::runtime::Runtime::new().map_err(|e| format!("Tokio runtime error: {}", e))?;
     rt.block_on(async {
@@ -696,32 +687,24 @@ pub fn send_ble_struct_command(conn: &BleConnection, opcode: u8, payload: &[u8])
 async fn write_struct_command(peripheral: &Peripheral, characteristic: &Characteristic, opcode: u8, payload: &[u8]) {
     static SEQ: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
 
-    // bare struct form fits in a default-MTU (23) write → send it; anything
-    // larger is truncated by BlueZ and must go chunked only
-    if 24 + payload.len() <= 20 {
-        let mut bare = vec![0u8; 24 + payload.len()];
-        bare[0] = opcode;
-        bare[24..].copy_from_slice(payload);
-        write_packet(peripheral, characteristic, &bare, opcode).await;
-    }
-
-    // chunked form: fields = struct bytes 1.. (the zero pad included)
-    let mut fields = vec![0u8; 23 + payload.len()];
-    fields[23..].copy_from_slice(payload);
-    // 17 data bytes + 6-byte header = 23 = smallest MTU — BlueZ silently
-    // truncates write-without-response beyond MTU-3 (every command that
-    // ever worked was ≤20 bytes; every struct command was 33+ and died)
-    const CHUNK: usize = 17;
-    let count = fields.len().div_ceil(CHUNK);
+    // official TX framing (xairbt_out_queue_write_cmd @0xec4e8 — every app
+    // command goes out this way): [chunk_len u16][type][chunk_idx]
+    // [chunk_count][seq] + data, chunk_size = type − 3, seq 0 for a
+    // single-chunk command. The chunk data is the payload DIRECTLY (the
+    // serializer copies the cmd's data area at +24): the zero-padded bare
+    // form buried it and the [type][0x01][data][cksum] single form — accepted
+    // only for the session commands 0x37/0x39/0x07/0x4B — never got a
+    // 0x21/0x41 response in any tested shape.
+    let chunk_size = (opcode as usize).saturating_sub(3).max(1);
+    let count = payload.len().div_ceil(chunk_size);
     let seq = if count > 1 {
         SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     } else {
-        0 // single-chunk commands always carry seq 0 (native lib @0xec5c4)
+        0
     };
-    for (idx, chunk) in fields.chunks(CHUNK).enumerate() {
-        let mut p = Vec::with_capacity(chunk.len() + 7);
-        p.push(chunk.len() as u8);
-        p.push(0);
+    for (idx, chunk) in payload.chunks(chunk_size).enumerate() {
+        let mut p = Vec::with_capacity(chunk.len() + 6);
+        p.extend_from_slice(&(chunk.len() as u16).to_le_bytes());
         p.push(opcode);
         p.push(idx as u8);
         p.push(count as u8);
@@ -779,31 +762,6 @@ pub fn send_fx_tempo(conn: &BleConnection, bpm: u16) -> Result<(), String> {
 /// shortcut: packet form unverified on-device; if ignored, try variants.
 pub fn send_setting(conn: &BleConnection, id: u8, value: u8) -> Result<(), String> {
     send_ble_command(conn, 0x25, &[id, value])
-}
-
-/// Input preset load: InputChannelState (op 0x17). Official layout
-/// (loadInputChannelPreset @0xb66f4 + setChannelState @0xfb284 in the native
-/// lib): cmd[0]=0x17, cmd[24]=ch_id, then the input-channel state —
-/// flags at +1..4 (stereo, mute, phase, phantom), gain f32 at +12,
-/// compressor f32 at +16, HPF Hz u16 at +20, pan f32 at +24,
-/// icon u16 at +70, channel label (%.20s) at +72.
-pub fn send_input_preset(
-    conn: &BleConnection,
-    ch_id: u8,
-    preset: &crate::model::presets::InputPreset,
-) -> Result<(), String> {
-    // fields only — send_ble_struct_command prepends the 23-zero struct pad
-    let mut state = vec![0u8; 100];
-    state[0] = ch_id;
-    state[1] = 0x01; // stereo flag (official presets set 1)
-                     // state+2/+3 (mute, phase) stay 0
-    state[4] = preset.phantom as u8;
-    state[12..16].copy_from_slice(&(preset.gain_db as f32).to_le_bytes());
-    state[20..22].copy_from_slice(&preset.hpf_hz.to_le_bytes());
-    // pan f32 at state+24 stays 0.0 (center); sends f32s at state+28..44 = 0
-    let label: Vec<u8> = preset.name.bytes().take(20).collect(); // %.20s
-    state[72..72 + label.len()].copy_from_slice(&label);
-    send_ble_struct_command(conn, 0x17, &state)
 }
 
 /// FX setup block: FxSetup (op 0x11). Official layout (setFxSetup @0xaf270 +
@@ -895,20 +853,14 @@ pub fn start_meter_loop(
             let mut first_data = true;
             let mut other_logged = 0u32;
             let mut samples_logged = 0u32;
-            let mut rotation = 0usize;
             log!("[BLE] Meter loop running (main session stream)");
             // the device answers MeterRequest with level pushes (a pull
             // model): the official app polls at meter rate (~10 Hz). One
             // request after pairing produced a single 3-record burst, then
-            // silence — so poll every 100 ms and rotate the metered output
-            // (Main → Mon 1 → Mon 2) every 2 s.
-            write_struct_command(&peripheral, &characteristic, 0x41, &[METER_OUTPUT_CHANNEL_IDS[0]])
-                .await;
-            send_meter_poll(&peripheral, &characteristic, 0).await;
-            let mut last_sent = std::time::Instant::now();
+            // silence — so poll every 100 ms.
+            send_meter_poll(&peripheral, &characteristic).await;
             loop {
-                let wait = Duration::from_millis(100).saturating_sub(last_sent.elapsed());
-                let notification = match tokio::time::timeout(wait, notifications.next()).await {
+                let notification = match tokio::time::timeout(Duration::from_millis(100), notifications.next()).await {
                     Ok(Some(n)) => Some(n),
                     Ok(None) => {
                         log_warn!("[BLE] Meter loop: notification stream ended");
@@ -942,10 +894,7 @@ pub fn start_meter_loop(
                                 floats.join(" ")
                             );
                         }
-                        let _ = meter_tx.send(MeterMsg::Frame(
-                            values,
-                            rotation % METER_OUTPUT_BYTES.len(),
-                        ));
+                        let _ = meter_tx.send(MeterMsg::Frame(values, 0));
                     } else if v.len() == 6
                         && v[0] == 0x06
                         && v[..5]
@@ -991,42 +940,20 @@ pub fn start_meter_loop(
                         }
                     }
                 }
-                if last_sent.elapsed() >= Duration::from_secs(2) {
-                    rotation += 1;
-                    let rot = rotation % METER_OUTPUT_CHANNEL_IDS.len();
-                    let ch_id = METER_OUTPUT_CHANNEL_IDS[rot];
-                    log_debug!("[BLE] Meter rotation → output 0x{:02X}", ch_id);
-                    write_struct_command(&peripheral, &characteristic, 0x41, &[ch_id]).await;
-                    last_sent = std::time::Instant::now();
-                } else {
-                    // poll: request levels for the currently selected output
-                    let rot = rotation % METER_OUTPUT_BYTES.len();
-                    send_meter_poll(&peripheral, &characteristic, rot).await;
-                }
+                // poll: request levels (~10 Hz, the official app's meter rate)
+                send_meter_poll(&peripheral, &characteristic).await;
             }
         });
     });
 }
 
-/// MeterRequest poll (0x21): fields = count=8 + the full 10-slot id table
-/// (40 41 42 43 C4 C5 C6 <out> 00 00) — the selected output overwrites slot
-/// 7, the memcpy in setMeterOutputChannelId @0xb1564 always copies 10 bytes.
-async fn send_meter_poll(peripheral: &Peripheral, characteristic: &Characteristic, rot: usize) {
-    let out_byte = METER_OUTPUT_BYTES[rot];
-    let fields = [
-        0x08u8, // meter channel count (7 inputs + 1 output)
-        METER_INPUT_IDS[0],
-        METER_INPUT_IDS[1],
-        METER_INPUT_IDS[2],
-        METER_INPUT_IDS[3],
-        METER_INPUT_IDS[4],
-        METER_INPUT_IDS[5],
-        METER_INPUT_IDS[6],
-        out_byte,
-        0x00,
-        0x00,
-    ];
-    write_struct_command(peripheral, characteristic, 0x21, &fields).await;
+/// MeterRequest poll (0x21): class-2 request commands are payload-free single
+/// form — [type][0x01][cksum], cksum = type + 0x01 — proven on-air by
+/// CONFIG_REQUEST ([0x07][0x01][0x08] → 0x27 names) and DUMP_TRIGGER
+/// ([0x4B][0x01][0x4C] → SysEx dump). Every payload-carrying shape (padded
+/// bare, chunked header, single form with the 10-slot id table) was ignored.
+async fn send_meter_poll(peripheral: &Peripheral, characteristic: &Characteristic) {
+    write_packet(peripheral, characteristic, &[0x21, 0x01, 0x22], 0x21).await;
 }
 
 /// Re-fetch the snapshot list from the device. One-shot: opens its own

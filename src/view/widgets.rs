@@ -4,7 +4,7 @@ use iced::{
     widget::canvas::{
         self, Canvas, Frame, Geometry, Path, Stroke,
     },
-    widget::{container, row, slider, text, tooltip, vertical_slider, Row},
+    widget::{container, mouse_area, row, slider, text, tooltip, vertical_slider, Row},
     Center, Element, Length, Point, Rectangle,
 };
 use std::ops::RangeInclusive;
@@ -55,6 +55,17 @@ where
     )
     .gap(4)
     .into()
+}
+
+// level fader scale is 1..=127 over −70…+10 dB (see sysex_parser::db_to_cc) → 0 dB = 111
+pub const LEVEL_ZERO_DB: u8 = 111;
+
+/// Wrap a widget so right-click sends one message (faders: snap to 0 dB).
+pub fn on_right_click<'a>(
+    content: impl Into<Element<'a, InterfaceMessage>>,
+    msg: InterfaceMessage,
+) -> Element<'a, InterfaceMessage> {
+    mouse_area(content).on_right_press(msg).into()
 }
 
 pub fn v_slider<'a, F>(
