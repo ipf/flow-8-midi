@@ -52,7 +52,7 @@ fn clipboard_cmd() -> &'static str {
     }
 }
 
-const APPLICATION_NAME: &str = "FLOW 8 MIDI Controller";
+const APPLICATION_NAME: &str = "FLOW 8 Controller";
 const PREFERRED_WIDTH: f32 = 1200.0;
 const PREFERRED_HEIGHT: f32 = 700.0;
 const MIN_WIDTH: f32 = 800.0;
