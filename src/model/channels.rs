@@ -68,7 +68,11 @@ pub struct Channel {
     pub channel_strip: BasicChannelStrip,
     pub four_band_eq: FourBandEQ,
     pub sends: ChannelSends,
+    /// live output level (linear 0..1) from the meter stream
     pub meter: f32,
+    /// the raw last-frame level — the display (`meter`) slides toward it so
+    /// motion is smooth between the device's ~2.4 Hz frame cadence
+    pub meter_target: f32,
     pub clip_time: Option<Instant>,
 }
 
@@ -94,6 +98,7 @@ impl Default for Channel {
             four_band_eq: FourBandEQ::default(),
             sends: ChannelSends::default(),
             meter: 0.0,
+            meter_target: 0.0,
             clip_time: None,
         }
     }
@@ -174,6 +179,8 @@ pub struct Bus {
     pub nine_band_eq: NineBandEQ,
     /// live output level (linear 0..1) from the meter stream
     pub meter: f32,
+    /// raw last-frame level — see Channel::meter_target
+    pub meter_target: f32,
 }
 
 impl Default for Bus {
@@ -185,6 +192,7 @@ impl Default for Bus {
             bus_strip: BusStrip::default(),
             nine_band_eq: NineBandEQ::default(),
             meter: 0.0,
+            meter_target: 0.0,
         }
     }
 }

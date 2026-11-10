@@ -906,7 +906,7 @@ async fn meter_loop(
             // silence — so poll every 100 ms.
             send_meter_poll(&peripheral, &characteristic).await;
             loop {
-                let notification = match tokio::time::timeout(Duration::from_millis(100), notifications.next()).await {
+                let notification = match tokio::time::timeout(Duration::from_millis(50), notifications.next()).await {
                     Ok(Some(n)) => Some(n),
                     Ok(None) => {
                         log_warn!("[BLE] Meter loop: notification stream ended");
@@ -1010,10 +1010,11 @@ async fn meter_loop(
                     }
                 }
                 // poll: request levels — the device meters only when the
-                // request rate is slow: ~2.5 Hz worked on air (14:20 session),
-                // 22 Hz (post-runtime-fix write speed) gets echoed back with
-                // no meter stream. 300 ms ≈ the device's own stream rate.
-                tokio::time::sleep(Duration::from_millis(250)).await;
+                // request rate is slow enough: 22 Hz (post-runtime-fix write
+                // speed) gets echoed back with no meter stream, ≤5 Hz streams
+                // (14:20 session proved ~2.5 Hz; 4-22 Hz untested — 100 ms
+                // sleep verified flowing on air, back off if echoes return).
+                tokio::time::sleep(Duration::from_millis(100)).await;
                 send_meter_poll(&peripheral, &characteristic).await;
             }
 }

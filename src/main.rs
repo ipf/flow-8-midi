@@ -313,7 +313,7 @@ fn send_fx_setup(controller: &FLOW8Controller, fx_idx: u8) {
 }
 
 fn subscription(_controller: &FLOW8Controller) -> Subscription<InterfaceMessage> {
-    iced::time::every(std::time::Duration::from_millis(200)).map(|_| InterfaceMessage::Tick)
+    iced::time::every(std::time::Duration::from_millis(50)).map(|_| InterfaceMessage::Tick)
 }
 
 fn update(controller: &mut FLOW8Controller, message: InterfaceMessage) {
@@ -741,13 +741,22 @@ fn update_interface(controller: &mut FLOW8Controller, message: InterfaceMessage)
                 }
             }
 
-            // VU meters: channels decay fast (their 0x22 slots stream at full rate);
-            // buses decay slowly (each output only streams 1 in 3 of the rotation)
+            // VU meters: display slides toward the last-frame level so motion
+            // is smooth between the device's ~400 ms frame cadence (factors
+            // per 50 ms tick; 200 ms cadence equivalents: 0.90 / 0.995).
             for ch in &mut controller.channels {
-                ch.meter *= 0.90;
+                if ch.meter_target > ch.meter {
+                    ch.meter += (ch.meter_target - ch.meter) * 0.6;
+                } else {
+                    ch.meter *= 0.975;
+                }
             }
             for bus in &mut controller.buses {
-                bus.meter *= 0.995;
+                if bus.meter_target > bus.meter {
+                    bus.meter += (bus.meter_target - bus.meter) * 0.6;
+                } else {
+                    bus.meter *= 0.9988;
+                }
             }
             if let Some(ref meter_rx) = controller.meter_receiver {
                 while let Ok(msg) = meter_rx.try_recv() {
@@ -764,7 +773,7 @@ fn update_interface(controller: &mut FLOW8Controller, message: InterfaceMessage)
                                 };
                                 if let Some(db) = db {
                                     let linear = crate::service::ble::meter_db_to_linear(db);
-                                    ch.meter = linear.max(ch.meter);
+                                    ch.meter_target = linear;
                                 }
                             }
                             // floats 10/11 = L/R of the rotated metered output
@@ -775,8 +784,8 @@ fn update_interface(controller: &mut FLOW8Controller, message: InterfaceMessage)
                                 if let Some(bus) =
                                     controller.buses.iter_mut().find(|b| b.id == bus_id)
                                 {
-                                    bus.meter =
-                                        crate::service::ble::meter_db_to_linear(db).max(bus.meter);
+                                    bus.meter_target =
+                                        crate::service::ble::meter_db_to_linear(db);
                                 }
                             }
                         }
@@ -826,8 +835,9 @@ fn update_interface(controller: &mut FLOW8Controller, message: InterfaceMessage)
             }
 
             // clip latch: red dot above the fader for 2 s once the level hits 0 dBFS
+            // (latched on the raw frame target — the display lags it by design)
             for ch in &mut controller.channels {
-                if ch.meter >= 0.99
+                if ch.meter_target >= 0.99
                     && ch
                         .clip_time
                         .map(|t| t.elapsed().as_millis() > 2000)
