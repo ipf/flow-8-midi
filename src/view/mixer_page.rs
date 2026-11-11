@@ -27,7 +27,7 @@ const EQ_KNOB_SIZE: f32 = 28.0;
 
 /// thin vertical VU bar, filled bottom-up; value is linear 0..1.
 /// Always visible: dark unlit track + colored lit portion.
-fn meter_bar(value: f32) -> Element<'static, InterfaceMessage> {
+fn meter_bar(value: f32, gr: u8) -> Element<'static, InterfaceMessage> {
     let value = value.clamp(0.0, 1.0);
     let filled = (value * FADER_HEIGHT).max(if value > 0.0 { 2.0 } else { 0.0 });
     let color = if value > 0.95 {
@@ -44,6 +44,22 @@ fn meter_bar(value: f32) -> Element<'static, InterfaceMessage> {
     let mut col = Column::new().height(Length::Fixed(FADER_HEIGHT));
     // unlit upper part
     let top = FADER_HEIGHT - filled;
+    // gain reduction: up to 3 red 4 px segments hanging from the meter top
+    // (0x22 GR bits, 0..=3) — only visible while the compressor/limiter is
+    // actually reducing
+    let gr_h = (gr as f32 * 4.0).min(top.max(0.0));
+    if gr_h > 0.5 {
+        col = col.push(
+            container(Space::new())
+                .width(Length::Fixed(METER_WIDTH))
+                .height(Length::Fixed(gr_h))
+                .style(move |_| container::Style {
+                    background: Some(Color::from_rgb(0.9, 0.15, 0.15).into()),
+                    ..Default::default()
+                }),
+        );
+    }
+    let top = top - gr_h;
     if top > 0.5 {
         col = col.push(
             container(Space::new())
@@ -289,7 +305,7 @@ fn build_channel_strip<'a>(
                     }, format_level(strip.level)),
                     InterfaceMessage::Level(ch_id, LEVEL_ZERO_DB),
                 ),
-                meter_bar(channel.meter),
+                meter_bar(channel.meter, channel.gr),
             ]
             .align_y(iced::alignment::Vertical::Bottom)
             .spacing(2),
@@ -528,7 +544,7 @@ fn build_bus_strip(bus: &Bus) -> Element<'_, InterfaceMessage> {
                     }, format_level(bus.bus_strip.level)),
                     InterfaceMessage::BusLevel(bus_idx, bus_id, LEVEL_ZERO_DB),
                 ),
-                meter_bar(bus.meter),
+                meter_bar(bus.meter, bus.gr),
             ]
             .align_y(iced::alignment::Vertical::Bottom)
             .spacing(2),
