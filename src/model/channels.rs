@@ -73,6 +73,8 @@ pub struct Channel {
     /// the raw last-frame level — the display (`meter`) slides toward it so
     /// motion is smooth between the device's ~2.4 Hz frame cadence
     pub meter_target: f32,
+    /// gain reduction (0..=3) from the meter stream's GR bits
+    pub gr: u8,
     pub clip_time: Option<Instant>,
 }
 
@@ -99,6 +101,7 @@ impl Default for Channel {
             sends: ChannelSends::default(),
             meter: 0.0,
             meter_target: 0.0,
+            gr: 0,
             clip_time: None,
         }
     }
@@ -181,6 +184,9 @@ pub struct Bus {
     pub meter: f32,
     /// raw last-frame level — see Channel::meter_target
     pub meter_target: f32,
+    /// gain reduction (0..=3) from the meter stream's GR bits — compressor
+    /// channel only, 0 otherwise
+    pub gr: u8,
 }
 
 impl Default for Bus {
@@ -193,6 +199,7 @@ impl Default for Bus {
             nine_band_eq: NineBandEQ::default(),
             meter: 0.0,
             meter_target: 0.0,
+            gr: 0,
         }
     }
 }

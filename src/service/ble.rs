@@ -993,7 +993,16 @@ async fn meter_loop(
                         dbv.join(" ")
                     );
                 }
-                let _ = meter_tx.send(MeterMsg::Frame(values, out_rot));
+                // GR u16 unpack per native XAIRClient::updateMeters: inputs
+                // get bits 2*chIdx, the metered output the top 2 bits
+                // (2-bit values 0..=3); slots 12-14 don't map to channels
+                // (meterIndexToChannelIndex → -1 for i ≥ 12)
+                let mut gr_slots = Vec::with_capacity(8);
+                for i in 0..7u32 {
+                    gr_slots.push(((gr >> (2 * i)) & 3) as u8);
+                }
+                gr_slots.push(((gr >> 14) & 3) as u8);
+                let _ = meter_tx.send(MeterMsg::Frame(values, out_rot, gr_slots));
                 out_rot = (out_rot + 1) % METER_OUTPUT_BYTES.len();
                 got_frame = true;
             } else if v.len() == 6

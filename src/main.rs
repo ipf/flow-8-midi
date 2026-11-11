@@ -761,7 +761,7 @@ fn update_interface(controller: &mut FLOW8Controller, message: InterfaceMessage)
             if let Some(ref meter_rx) = controller.meter_receiver {
                 while let Ok(msg) = meter_rx.try_recv() {
                     match msg {
-                        MeterMsg::Frame(values, out_rot) => {
+                        MeterMsg::Frame(values, out_rot, gr) => {
                             // floats 0-9 (official index table): 0-3 = inputs 1-4,
                             // 4/5 = input5 L/R, 6/7 = input6 L/R, 8/9 = USB/BT L/R
                             for (i, ch) in controller.channels.iter_mut().enumerate() {
@@ -775,6 +775,10 @@ fn update_interface(controller: &mut FLOW8Controller, message: InterfaceMessage)
                                     let linear = crate::service::ble::meter_db_to_linear(db);
                                     ch.meter_target = linear;
                                 }
+                                // GR: our channel i == the device's input
+                                // channel idx (0..=6), gr[7] = the metered
+                                // output
+                                ch.gr = gr.get(i as usize).copied().unwrap_or(0);
                             }
                             // floats 10/11 = L/R of the rotated metered output
                             // (rotation 0/1/2 → bus id 7/8/9 = Main/Mon 1/Mon 2)
@@ -786,6 +790,7 @@ fn update_interface(controller: &mut FLOW8Controller, message: InterfaceMessage)
                                 {
                                     bus.meter_target =
                                         crate::service::ble::meter_db_to_linear(db);
+                                    bus.gr = gr.get(7).copied().unwrap_or(0);
                                 }
                             }
                         }

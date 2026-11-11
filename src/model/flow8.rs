@@ -77,8 +77,12 @@ impl fmt::Display for SyncInterval {
 /// Live meter data pushed by the BLE meter loop (service::ble::start_meter_loop).
 pub enum MeterMsg {
     /// MeterUpdate (0x22): 15 f32 dB values — 0-9 inputs, 10/11 = L/R of the
-    /// currently metered output — plus the rotation index of that output.
-    Frame(Vec<f32>, usize),
+    /// currently metered output — plus the rotation index of that output and
+    /// the unpacked gain-reduction levels (native XAIRClient::updateMeters:
+    /// the GR u16 packs 8× 2-bit values — bits 2*i per input i, top 2 bits
+    /// for the metered output; 0..=3, only compressor/limiter channels).
+    /// gr indices 0..=6 = inputs 1-4/pairs/USB, 7 = the metered output.
+    Frame(Vec<f32>, usize, Vec<u8>),
     /// ChannelMaster push (0x06): fader position (raw fix8 u8) of `input`
     /// feeding output bus `output` — the device's per-bus mix, not a signal
     /// level. input: 0x00-0x06 channel ids (0x08 bit = stereo flag),
