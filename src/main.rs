@@ -790,11 +790,15 @@ fn update_interface(controller: &mut FLOW8Controller, message: InterfaceMessage)
                             }
                         }
                         MeterMsg::Fader { input, output, value } => {
-                            // 0x06 push = fader position (raw fix8 u8), not a
-                            // signal level: mirror it into the UI. Fader ids:
-                            // 0x0F/0x18/0x19 = Main/Mon1/Mon2 bus faders,
-                            // else channel id (0x08 bit = stereo flag). A
-                            // channel feeding Mon1/Mon2 = its send level.
+                            // 0x06 push = fader position, NOT a signal level:
+                            // mirror it into the UI. The value byte is fix8
+                            // (F48 dB index, selector 3) — convert to the
+                            // 1..=127 CC scale first (raw 190 = −0.2 dB, not
+                            // +50). Fader ids: 0x0F/0x18/0x19 = Main/Mon1/Mon2
+                            // bus faders, else channel id (0x08 bit = stereo
+                            // flag). A channel feeding Mon1/Mon2 = its send
+                            // level.
+                            let value = crate::service::ble::fix8_to_level_cc(value);
                             let bus_fader = match input {
                                 0x0F => Some(7),
                                 0x18 => Some(8),

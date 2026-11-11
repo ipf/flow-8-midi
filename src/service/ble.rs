@@ -820,8 +820,9 @@ const METER_INPUT_IDS: [u8; 7] = [0x40, 0x41, 0x42, 0x43, 0xC4, 0xC5, 0xC6];
 const METER_OUTPUT_BYTES: [u8; 3] = [0xCF, 0xD8, 0xD9];
 
 // Fader/meter dB curve: fix8 selector 3 lookup (F48 from the official
-// app's tables — meter level byte = F48[byte]; F48[111] = 0 dB = the 0 dB
-// fader/meter reference at CC 111).
+// app's tables — a meter level byte OR a fader position byte b means
+// F48[b] dB; F48's zero is at index ~191, so 0 dB = fix8 190/191 —
+// unrelated to the sysex CC scale where 0 dB = CC 111).
 pub const F48: [f32; 256] = [
     -144.0, -88.11764526367188, -86.23529052734375, -84.35294342041016, -82.47058868408203, -80.5882339477539, -78.70587921142578, -76.82353210449219,
     -74.94117736816406, -73.05882263183594, -71.17646789550781, -69.29411315917969, -67.4117660522461, -65.52941131591797, -63.647056579589844, -61.764705657958984,
@@ -877,6 +878,20 @@ pub fn meter_db_to_linear(db: f32) -> f32 {
         100.0
     };
     v / 100.0
+}
+
+/// Fader/sends fix8 byte (F48 dB index, selector 3) → the UI's 1..=127 CC
+/// scale (−70…+10 dB, 0 dB = CC 111). The 0x06 fader push reports fix8, not
+/// CC — writing it raw made a 0 dB fader read +50 dB (fix8 190).
+/// Corroborated on air: CC 111 ↔ echo 190, CC 92 ↔ 120, CC 1 ↔ 10,
+/// CC 127 ↔ 250.
+pub fn fix8_to_level_cc(b: u8) -> u8 {
+    let db = F48[b as usize];
+    if db < -70.0 {
+        return 0; // OFF
+    }
+    let cc = (1.0 + (db + 70.0) / 80.0 * 126.0).round() as i32;
+    cc.clamp(1, 127) as u8
 }
 
 /// Run the meter receive loop on its own thread, riding the main session's
