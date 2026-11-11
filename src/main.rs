@@ -317,6 +317,35 @@ fn subscription(_controller: &FLOW8Controller) -> Subscription<InterfaceMessage>
 }
 
 fn update(controller: &mut FLOW8Controller, message: InterfaceMessage) {
+    if let InterfaceMessage::BusLevel(_, bus_id, value) = &message {
+        if *bus_id >= 10 {
+            // FX return fader: official ChannelMaster path (BLE 0x06, dst =
+            // the bus's own id) — the USB CC#7-on-raw-10/11 guess never showed
+            // an effect. ChannelMaster id space: Main=0x0F, Mon1/2=0x0A/0x0B,
+            // FX1/2=0x0C/0x0D. UI CC scale: −70…+10 dB, cc 0 = OFF (−144).
+            let cmd_id = 0x0A + (*bus_id - 8);
+            let db = if *value == 0 {
+                -144.0
+            } else {
+                -70.0 + (*value - 1) as f32 / 126.0 * 80.0
+            };
+            let conn_arc = controller.ble_connection.clone();
+            std::thread::spawn(move || {
+                let Ok(guard) = conn_arc.lock() else {
+                    return;
+                };
+                if let Some(conn) = guard.as_ref() {
+                    if let Err(e) = ble::send_channel_master(conn, cmd_id, cmd_id, db) {
+                        log_warn!("[BLE] FX return ChannelMaster failed: {}", e);
+                    } else {
+                        log!("[BLE] FX return 0x{:02X} = {:.1} dB", cmd_id, db);
+                    }
+                }
+            });
+            update_interface(controller, message);
+            return;
+        }
+    }
     match_midi_command(&message, &mut controller.midi_conn);
     update_interface(controller, message);
 }

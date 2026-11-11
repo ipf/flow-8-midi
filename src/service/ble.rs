@@ -894,6 +894,26 @@ pub fn fix8_to_level_cc(b: u8) -> u8 {
     cc.clamp(1, 127) as u8
 }
 
+/// dB value → fix8 byte (F48 index, selector 3 = first table step above the
+/// value; native xairbt_float_to_fix8, confirmed against XairbtProtocol.kt).
+pub fn db_to_fix8(db: f32) -> u8 {
+    for (i, &step) in F48.iter().enumerate().skip(1) {
+        if db < step {
+            return (i - 1) as u8;
+        }
+    }
+    255
+}
+
+/// ChannelMaster (0x06) TX: [id][dst][fix8(dB)] — the official app's path for
+/// every fader move (queueChannelMasterControlCommandPackets @0x79cd0: id at
+/// cmd+0x18, dst at +0x19, dB f32 at +0x1C; wire layout = table 7 via
+/// CMD_FT[0x06], the f32 serialized as fix8 selector 3). dst == id sets the
+/// bus's own fader (FX return level); dst = 0x0C/0x0D sets id's FX send.
+pub fn send_channel_master(conn: &BleConnection, id: u8, dst: u8, db: f32) -> Result<(), String> {
+    send_ble_struct_command(conn, 0x06, &[id, dst, db_to_fix8(db)])
+}
+
 /// Run the meter receive loop on its own thread, riding the main session's
 /// notification stream (a second subscribe() on the same connection stalls on
 /// BlueZ; the mixer answers meter polls only on an authenticated connection).
