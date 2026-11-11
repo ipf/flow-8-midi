@@ -895,128 +895,141 @@ async fn meter_loop(
     use tokio_stream::StreamExt;
 
     let mut first_data = true;
-            let mut other_logged = 0u32;
-            let mut samples_logged = 0u32;
-            let mut frames_logged = 0u32;
-            let mut frames_seen = 0u32;
-            log!("[BLE] Meter loop running (main session stream)");
-            // the device answers MeterRequest with level pushes (a pull
-            // model): the official app polls at meter rate (~10 Hz). One
-            // request after pairing produced a single 3-record burst, then
-            // silence — so poll every 100 ms.
-            send_meter_poll(&peripheral, &characteristic).await;
-            loop {
-                let notification = match tokio::time::timeout(Duration::from_millis(50), notifications.next()).await {
-                    Ok(Some(n)) => Some(n),
-                    Ok(None) => {
-                        log_warn!("[BLE] Meter loop: notification stream ended");
-                        break;
-                    }
-                    Err(_) => None,
-                };
-                if let Some(notification) = notification {
-                    let v = &notification.value;
-                    if v.first() == Some(&METER_UPDATE_TYPE) {
-                        // raw hex of the first frames: the payload shape is
-                        // still unknown (len=20, not the 63-byte table-30 form)
-                        if frames_logged < 5 {
-                            frames_logged += 1;
-                            let hex: Vec<String> =
-                                v.iter().map(|b| format!("{:02X}", b)).collect();
-                            log!(
-                                "[BLE] Meter frame #{} (len={}): {}",
-                                frames_logged,
-                                v.len(),
-                                hex.join(" ")
-                            );
-                        }
-                        // [22][01][15 × fix8 dB bytes (F48 lookup)][GR u16 BE]
-                        // [byte-sum cksum] — fix8 = 1 BYTE on the wire
-                        // (XairbtProtocol selector 3 = F48 index), confirmed
-                        // by the 20-byte air frame and XairbtQueues.kt
-                        let mut values = Vec::with_capacity(15);
-                        let mut gr: u16 = 0;
-                        if v.len() >= 20 {
-                            for &b in &v[2..17] {
-                                values.push(F48[b as usize]);
-                            }
-                            gr = u16::from_be_bytes([v[17], v[18]]);
-                        }
-                        if first_data {
-                            first_data = false;
-                            let floats: Vec<String> =
-                                values.iter().map(|f| format!("{:.1}", f)).collect();
-                            log!(
-                                "[BLE] Meter data flowing ({} slots, GR={}): {}",
-                                values.len(),
-                                gr,
-                                floats.join(" ")
-                            );
-                        }
-                        frames_seen += 1;
-                        if frames_seen % 4 == 0 {
-                            let dbv: Vec<String> =
-                                values.iter().map(|f| format!("{:.0}", f)).collect();
-                            log_debug!(
-                                "[BLE] Meter @{}: {}",
-                                frames_seen,
-                                dbv.join(" ")
-                            );
-                        }
-                        let _ = meter_tx.send(MeterMsg::Frame(values, 0));
-                    } else if v.len() == 6
-                        && v[0] == 0x06
-                        && v[..5]
-                            .iter()
-                            .fold(0u8, |a, b| a.wrapping_add(*b))
-                            == v[5]
-                    {
-                        // meter sample record: [06][01][in_id][out_id][value][cksum],
-                        // checksum = byte-sum of the first 5 bytes (verified on
-                        // all captures). Type 0x06 = ChannelMaster push: a fader
-                        // position (queueChannelMaster: getChannelById(cmd[25]),
-                        // setVolumedBForInputChannelId(cmd[24], f32)) — arrives
-                        // when our MIDI-driven moves land or a physical fader
-                        // moves. Feeds fader sync, not the meters.
-                        let _ = meter_tx.send(MeterMsg::Fader {
-                            input: v[2],
-                            output: v[3],
-                            value: v[4],
-                        });
-                        if samples_logged < 60 {
-                            samples_logged += 1;
-                            log_debug!(
-                                "[BLE] Fader push: in=0x{:02X} out=0x{:02X} val=0x{:02X}",
-                                v[2],
-                                v[3],
-                                v[4]
-                            );
-                        }
-                    } else if v.len() == 5 && (v[0] == 0x01 || v[0] == 0x08) {
-                        // mute/solo state echo from the device — handled locally
-                    } else {
-                        // hex-log the first unknowns: anything else that flows
-                        // on a live session reveals itself here
-                        if other_logged < 100 {
-                            other_logged += 1;
-                            let hex: Vec<String> =
-                                v.iter().map(|b| format!("{:02X}", b)).collect();
-                            log_debug!(
-                                "[BLE] Meter loop: other notification len={} {}",
-                                v.len(),
-                                hex.join(" ")
-                            );
-                        }
-                    }
-                }
-                // poll: request levels — the device meters only when the
-                // request rate is slow enough: 22 Hz (post-runtime-fix write
-                // speed) gets echoed back with no meter stream, ≤5 Hz streams
-                // (14:20 session proved ~2.5 Hz; 4-22 Hz untested — 100 ms
-                // sleep verified flowing on air, back off if echoes return).
-                tokio::time::sleep(Duration::from_millis(100)).await;
-                send_meter_poll(&peripheral, &characteristic).await;
+    let mut other_logged = 0u32;
+    let mut samples_logged = 0u32;
+    let mut frames_logged = 0u32;
+    let mut frames_seen = 0u32;
+    log!("[BLE] Meter loop running (main session stream)");
+    // rotating output select: poll 1 meters Main (0xCF), then Mon1 (0xD8)
+    // and Mon2 (0xD9) — slots 10/11 always carry the SELECTED output's L/R
+    // (disasm 0xb1564: the output id overwrites payload index 7), and
+    // out_rot 0/1/2 maps to buses Main/Mon1/Mon2 in the UI consumer
+    let mut out_rot = 0usize;
+    send_meter_poll(&peripheral, &characteristic, METER_OUTPUT_BYTES[out_rot]).await;
+    'outer: loop {
+        // one poll in flight: the device paces exactly one 0x22 frame per
+        // accepted poll (~410 ms on its own timer — frames arrive 410 ms
+        // apart whether polled at 2.5 Hz, ~5 Hz, or not polled at all), so
+        // out_rot advances ONLY when a frame lands: poll↔frame stay 1:1
+        // and each frame's rotation index is the poll's output
+        let deadline = tokio::time::Instant::now() + Duration::from_millis(700);
+        let mut got_frame = false;
+        while !got_frame {
+            let wait = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if wait.is_zero() {
+                // frame missed (poll lost or stream hiccup): re-poll the
+                // SAME output — don't advance, assignment stays exact
+                break;
             }
+            let notification = match tokio::time::timeout(wait, notifications.next()).await {
+                Ok(Some(n)) => Some(n),
+                Ok(None) => {
+                    log_warn!("[BLE] Meter loop: notification stream ended");
+                    break 'outer;
+                }
+                Err(_) => None,
+            };
+            let Some(notification) = notification else { break };
+            let v = &notification.value;
+            if v.first() == Some(&METER_UPDATE_TYPE) {
+                // raw hex of the first frames: the payload shape is
+                // still unknown (len=20, not the 63-byte table-30 form)
+                if frames_logged < 5 {
+                    frames_logged += 1;
+                    let hex: Vec<String> =
+                        v.iter().map(|b| format!("{:02X}", b)).collect();
+                    log!(
+                        "[BLE] Meter frame #{} (len={}): {}",
+                        frames_logged,
+                        v.len(),
+                        hex.join(" ")
+                    );
+                }
+                // [22][01][15 × fix8 dB bytes (F48 lookup)][GR u16 BE]
+                // [byte-sum cksum] — fix8 = 1 BYTE on the wire
+                // (XairbtProtocol selector 3 = F48 index), confirmed
+                // by the 20-byte air frame and XairbtQueues.kt
+                let mut values = Vec::with_capacity(15);
+                let mut gr: u16 = 0;
+                if v.len() >= 20 {
+                    for &b in &v[2..17] {
+                        values.push(F48[b as usize]);
+                    }
+                    gr = u16::from_be_bytes([v[17], v[18]]);
+                }
+                if first_data {
+                    first_data = false;
+                    let floats: Vec<String> =
+                        values.iter().map(|f| format!("{:.1}", f)).collect();
+                    log!(
+                        "[BLE] Meter data flowing ({} slots, GR={}): {}",
+                        values.len(),
+                        gr,
+                        floats.join(" ")
+                    );
+                }
+                frames_seen += 1;
+                if frames_seen % 4 == 0 {
+                    let dbv: Vec<String> =
+                        values.iter().map(|f| format!("{:.0}", f)).collect();
+                    log_debug!(
+                        "[BLE] Meter @{}: {}",
+                        frames_seen,
+                        dbv.join(" ")
+                    );
+                }
+                let _ = meter_tx.send(MeterMsg::Frame(values, out_rot));
+                out_rot = (out_rot + 1) % METER_OUTPUT_BYTES.len();
+                got_frame = true;
+            } else if v.len() == 6
+                && v[0] == 0x06
+                && v[..5]
+                    .iter()
+                    .fold(0u8, |a, b| a.wrapping_add(*b))
+                    == v[5]
+            {
+                // meter sample record: [06][01][in_id][out_id][value][cksum],
+                // checksum = byte-sum of the first 5 bytes (verified on
+                // all captures). Type 0x06 = ChannelMaster push: a fader
+                // position (queueChannelMaster: getChannelById(cmd[25]),
+                // setVolumedBForInputChannelId(cmd[24], f32)) — arrives
+                // when our MIDI-driven moves land or a physical fader
+                // moves. Feeds fader sync, not the meters.
+                let _ = meter_tx.send(MeterMsg::Fader {
+                    input: v[2],
+                    output: v[3],
+                    value: v[4],
+                });
+                if samples_logged < 60 {
+                    samples_logged += 1;
+                    log_debug!(
+                        "[BLE] Fader push: in=0x{:02X} out=0x{:02X} val=0x{:02X}",
+                        v[2],
+                        v[3],
+                        v[4]
+                    );
+                }
+            } else if v.len() == 5 && (v[0] == 0x01 || v[0] == 0x08) {
+                // mute/solo state echo from the device — handled locally
+            } else {
+                // hex-log the first unknowns: anything else that flows
+                // on a live session reveals itself here
+                if other_logged < 100 {
+                    other_logged += 1;
+                    let hex: Vec<String> =
+                        v.iter().map(|b| format!("{:02X}", b)).collect();
+                    log_debug!(
+                        "[BLE] Meter loop: other notification len={} {}",
+                        v.len(),
+                        hex.join(" ")
+                    );
+                }
+            }
+        }
+        // the device freed the poll slot (frame landed or missed): send
+        // the next request immediately — the device paces the answer itself
+        send_meter_poll(&peripheral, &characteristic, METER_OUTPUT_BYTES[out_rot]).await;
+    }
 }
 
 /// MeterRequest poll (0x21) — the device's metering trigger is the RAW
@@ -1027,10 +1040,10 @@ async fn meter_loop(
 /// field table 28: count byte + flat 15-byte id table (7 inputs + selected
 /// output + 7 zeros). The retry's disconnect stops metering, so the poll
 /// re-sends every iteration.
-async fn send_meter_poll(peripheral: &Peripheral, characteristic: &Characteristic) {
+async fn send_meter_poll(peripheral: &Peripheral, characteristic: &Characteristic, output: u8) {
     let mut packet = vec![0x21, 0x01, 0x08];
     packet.extend_from_slice(&METER_INPUT_IDS);
-    packet.push(METER_OUTPUT_BYTES[0]); // selected output: Main (0x0F|0x40|0x80)
+    packet.push(output); // selected output: id|0x40|0x80 (see poll rotation)
     packet.extend_from_slice(&[0x00; 7]);
     let cksum = packet.iter().fold(0u8, |a, b| a.wrapping_add(*b));
     packet.push(cksum);
