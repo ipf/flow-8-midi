@@ -301,7 +301,9 @@ fn send_fx_setup(controller: &FLOW8Controller, fx_idx: u8) {
             return;
         };
         if let Some(conn) = guard.as_ref() {
-            if let Err(e) = ble::send_fx_setup(conn, fx_id, p1, p2, p3, m, m1, m2) {
+            // 0x11 id = the device's channelId space (FX1=0x0C, FX2=0x0D) —
+            // our old fx_id 10/11 = Mon1/Mon2 there
+            if let Err(e) = ble::send_fx_setup(conn, 0x0A + (fx_id - 8), p1, p2, p3, m, m1, m2) {
                 log_warn!("[BLE] FX setup failed: {}", e);
             } else {
                 log!("[BLE] FX {} setup sent (params + routing)", fx_idx + 1);
@@ -574,16 +576,23 @@ fn update_interface(controller: &mut FLOW8Controller, message: InterfaceMessage)
                 .nth(fx_id as usize)
                 .map(|b| b.id)
             {
+                // 0x31 takes the device's channelId space (FX1=0x0C, FX2=0x0D
+                // — native queueFXLoadPresetCommandPackets passes the Kotlin's
+                // outputBus.channelId through unmapped) and a 0-based preset
+                // index (the 1..=16 dump values were the device's pushback).
+                // Our old fx_id 10/11 = Mon1/Mon2 in that space — every
+                // preset load landed on the wrong bank.
+                let fx_ch_id = 0x0A + (fx_bus_id - 8);
                 let conn_arc = controller.ble_connection.clone();
                 std::thread::spawn(move || {
                     let Ok(guard) = conn_arc.lock() else {
                         return;
                     };
                     if let Some(conn) = guard.as_ref() {
-                        if let Err(e) = ble::send_fx_preset(conn, fx_bus_id, preset + 1) {
+                        if let Err(e) = ble::send_fx_preset(conn, fx_ch_id, preset) {
                             log_warn!("[BLE] FX preset load failed: {}", e);
                         } else {
-                            log!("[BLE] FX {} preset {} sent", fx_id + 1, preset + 1);
+                            log!("[BLE] FX {} (0x{:02X}) preset {} sent", fx_id + 1, fx_ch_id, preset);
                         }
                     }
                 });

@@ -18,9 +18,12 @@ pub mod model {
     }
 }
 
-/// Live check for the ChannelMaster TX path: connects, sets the FX1 return
-/// (ChannelMaster 0x0C→0x0C) to +10 dB, then waits for the device's fader
-/// push echo ([06][01][0C][0C][fix8][cksum], logged by the meter loop).
+/// Live check of the whole FX chain: loads the AMBIENCE reverb on FX1
+/// (FXLoadPreset 0x31, channelId 0x0C, 0-based preset 0), then toggles the
+/// FX1 return (ChannelMaster 0x0C→0x0C) between +10 dB and −144 while a tone
+/// plays through USB. The Main output meter (MeterUpdate slots 10/11, logged
+/// by the meter loop) must change when the return toggles — that proves the
+/// send → engine → return → Main chain end-to-end, no ears needed.
 fn main() {
     let (st, _sr) = mpsc::channel();
     let (sn, _nr) = mpsc::channel();
@@ -29,10 +32,22 @@ fn main() {
 
     println!("connecting...");
     let conn = ble::connect_flow8_ble(st, sn, mt, se).expect("BLE connect");
-    println!("connected; sending ChannelMaster(0x0C, 0x0C, +10 dB)");
-    ble::send_channel_master(&conn, 0x0C, 0x0C, 10.0).expect("CM send");
-    println!("sent; waiting up to 6 s for the fader push echo...");
-    std::thread::sleep(Duration::from_secs(6));
+    println!("connected; loading AMBIENCE (preset 0) on FX1 (0x0C)");
+    ble::send_fx_preset(&conn, 0x0C, 0).expect("preset load");
+    std::thread::sleep(Duration::from_secs(2));
+
+    println!("return ON (+10 dB) — phase 1");
+    ble::send_channel_master(&conn, 0x0C, 0x0C, 10.0).expect("cm on");
+    std::thread::sleep(Duration::from_secs(10));
+
+    println!("return OFF (−144 dB) — phase 2");
+    ble::send_channel_master(&conn, 0x0C, 0x0C, -144.0).expect("cm off");
+    std::thread::sleep(Duration::from_secs(10));
+
+    println!("return ON again — phase 3");
+    ble::send_channel_master(&conn, 0x0C, 0x0C, 10.0).expect("cm on");
+    std::thread::sleep(Duration::from_secs(10));
+
     while let Ok(m) = mr.try_recv() {
         println!("{m:?}");
     }
