@@ -799,13 +799,17 @@ fn update_interface(controller: &mut FLOW8Controller, message: InterfaceMessage)
                             // mirror it into the UI. The value byte is fix8
                             // (F48 dB index, selector 3) — convert to the
                             // 1..=127 CC scale first (raw 190 = −0.2 dB, not
-                            // +50). Fader ids: 0x0F/0x18/0x19 = Main/Mon1/Mon2
-                            // bus faders, else channel id (0x08 bit = stereo
-                            // flag). A channel feeding Mon1/Mon2 = its send
-                            // level.
+                            // +50). Id space (official app: LRBusChannelId
+                            // 15, AUX 10/11, FX 12/13): a bus id as `input`
+                            // = that bus's own fader (FX return level), a
+                            // channel id = its send level to `output`.
                             let value = crate::service::ble::fix8_to_level_cc(value);
                             let bus_fader = match input {
                                 0x0F => Some(7),
+                                0x0A => Some(8),
+                                0x0B => Some(9),
+                                0x0C => Some(10),
+                                0x0D => Some(11),
                                 0x18 => Some(8),
                                 0x19 => Some(9),
                                 _ => None,
@@ -827,13 +831,21 @@ fn update_interface(controller: &mut FLOW8Controller, message: InterfaceMessage)
                                         ch.channel_strip.level = value;
                                         ch.channel_strip.level_synced = true;
                                     }
-                                    0x18 => {
+                                    0x0A | 0x18 => {
                                         ch.sends.mon1 = value;
                                         ch.sends.mon1_synced = true;
                                     }
-                                    0x19 => {
+                                    0x0B | 0x19 => {
                                         ch.sends.mon2 = value;
                                         ch.sends.mon2_synced = true;
+                                    }
+                                    0x0C => {
+                                        ch.sends.fx1 = value;
+                                        ch.sends.fx1_synced = true;
+                                    }
+                                    0x0D => {
+                                        ch.sends.fx2 = value;
+                                        ch.sends.fx2_synced = true;
                                     }
                                     _ => {}
                                 }

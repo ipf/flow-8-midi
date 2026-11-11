@@ -114,13 +114,15 @@ pub fn view_mixer(controller: &FLOW8Controller) -> Element<'_, InterfaceMessage>
     .width(Length::FillPortion(7))
     .height(Fill);
 
-    // Main fader rightmost: monitors first, then Main
-    let mut buses: Vec<&Bus> = controller
-        .buses
-        .iter()
-        .filter(|b| b.bus_type != BusType::Fx)
-        .collect();
-    buses.sort_by_key(|b| b.bus_type == BusType::Main);
+    // Main fader rightmost: monitors, then FX returns (FX1/FX2 = the send
+    // targets' return level — without these the FX send knobs are silent),
+    // then Main
+    let mut buses: Vec<&Bus> = controller.buses.iter().collect();
+    buses.sort_by_key(|b| match b.bus_type {
+        BusType::Monitor => 0,
+        BusType::Fx => 1,
+        BusType::Main => 2,
+    });
     let bus_strips: Vec<Element<InterfaceMessage>> =
         buses.into_iter().map(|b| build_bus_strip(b)).collect();
 
@@ -469,34 +471,37 @@ fn build_bus_strip(bus: &Bus) -> Element<'_, InterfaceMessage> {
 
     col = col.push(text(bus.label()).size(14));
 
-    // 9-band EQ knobs (3×3 grid), same data as the EQ page
-    let eq = &bus.nine_band_eq;
-    let bands: [(&str, u8, u8); 9] = [
-        ("62", eq.freq_62_hz, 0),
-        ("125", eq.freq_125_hz, 1),
-        ("250", eq.freq_250_hz, 2),
-        ("500", eq.freq_500_hz, 3),
-        ("1k", eq.freq_1_khz, 4),
-        ("2k", eq.freq_2_khz, 5),
-        ("4k", eq.freq_4_khz, 6),
-        ("8k", eq.freq_8_khz, 7),
-        ("16k", eq.freq_16_khz, 8),
-    ];
-    for chunk in bands.chunks(3) {
-        let mut eq_row = row![].spacing(4);
-        for &(label, value, band_index) in chunk {
-            eq_row = eq_row.push(knob_slot_s(
-                label,
-                eq.bands_synced[band_index as usize],
-                0..=127,
-                value,
-                64,
-                EQ_KNOB_SIZE,
-                move |v| InterfaceMessage::BusNineBandEq(bus_idx, bus_id, band_index, v),
-                format_eq(value),
-            ));
+    // 9-band EQ knobs (3×3 grid), same data as the EQ page — FX buses have
+    // no 9-band EQ (their strip is level-only: FX return fader)
+    if bus.has_nine_band_eq() {
+        let eq = &bus.nine_band_eq;
+        let bands: [(&str, u8, u8); 9] = [
+            ("62", eq.freq_62_hz, 0),
+            ("125", eq.freq_125_hz, 1),
+            ("250", eq.freq_250_hz, 2),
+            ("500", eq.freq_500_hz, 3),
+            ("1k", eq.freq_1_khz, 4),
+            ("2k", eq.freq_2_khz, 5),
+            ("4k", eq.freq_4_khz, 6),
+            ("8k", eq.freq_8_khz, 7),
+            ("16k", eq.freq_16_khz, 8),
+        ];
+        for chunk in bands.chunks(3) {
+            let mut eq_row = row![].spacing(4);
+            for &(label, value, band_index) in chunk {
+                eq_row = eq_row.push(knob_slot_s(
+                    label,
+                    eq.bands_synced[band_index as usize],
+                    0..=127,
+                    value,
+                    64,
+                    EQ_KNOB_SIZE,
+                    move |v| InterfaceMessage::BusNineBandEq(bus_idx, bus_id, band_index, v),
+                    format_eq(value),
+                ));
+            }
+            col = col.push(eq_row);
         }
-        col = col.push(eq_row);
     }
 
     // Pan (Main only; reserved slot on Mon) + Limiter (Main/Mon) as knobs,
