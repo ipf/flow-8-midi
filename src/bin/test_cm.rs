@@ -27,23 +27,31 @@ pub mod model {
 fn main() {
     let (st, _sr) = mpsc::channel();
     let (sn, _nr) = mpsc::channel();
-    let (mt, mr) = mpsc::channel();
+    let (mt, _mr) = mpsc::channel();
     let (se, _er) = mpsc::channel();
 
     println!("connecting...");
     let conn = ble::connect_flow8_ble(st, sn, mt, se).expect("BLE connect");
-    println!("connected; loading FX presets (FX1 reverb 0, FX2 delay 0)");
-    ble::send_fx_preset(&conn, 0x0C, 0).expect("fx1 preset");
-    ble::send_fx_preset(&conn, 0x0D, 0).expect("fx2 preset");
+    println!("connected");
+
+    // dump1: baseline (FX1 mute state, return level)
+    ble::send_dump_trigger(&conn).expect("trigger1");
+    std::thread::sleep(Duration::from_secs(7));
+
+    // write A: UNMUTE both FX buses (the official app's FX mute path —
+    // ChannelMute 0x08 on 0x0C/0x0D)
+    ble::send_channel_mute(&conn, 0x0C, false).expect("fx1 unmute");
+    ble::send_channel_mute(&conn, 0x0D, false).expect("fx2 unmute");
     std::thread::sleep(Duration::from_secs(2));
 
-    println!("parking FX returns at OFF (-144 dB)");
-    ble::send_channel_master(&conn, 0x0C, 0x0C, -144.0).expect("fx1 return");
-    ble::send_channel_master(&conn, 0x0D, 0x0D, -144.0).expect("fx2 return");
-    std::thread::sleep(Duration::from_secs(1));
+    // write B: open both FX returns via ChannelMaster
+    ble::send_channel_master(&conn, 0x0C, 0x0C, 10.0).expect("fx1 return");
+    ble::send_channel_master(&conn, 0x0D, 0x0D, 10.0).expect("fx2 return");
+    std::thread::sleep(Duration::from_secs(3));
 
-    while let Ok(m) = mr.try_recv() {
-        println!("{m:?}");
-    }
+    // dump2: state after unmute + CM
+    ble::send_dump_trigger(&conn).expect("trigger2");
+    std::thread::sleep(Duration::from_secs(7));
+
     println!("done");
 }

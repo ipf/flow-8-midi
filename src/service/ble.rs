@@ -465,13 +465,20 @@ async fn fetch_snapshot_names(
             Ok(Some(notification)) => {
                 if !notification.value.is_empty() {
                     let ptype = notification.value[0];
-                    log_debug!(
-                        "[BLE] Notification: type=0x{:02X}, len={}",
-                        ptype,
-                        notification.value.len()
-                    );
                     if ptype == STATE_DUMP_TYPE {
+                        // full hex of the mixer-state chunks: the channel
+                        // on/mute states (leftOn|rightOn flags per 12 slots,
+                        // FX1 = slot 10) live here, unparsed so far
+                        let hex: Vec<String> =
+                            notification.value.iter().map(|b| format!("{:02X}", b)).collect();
+                        log!("[BLE] MixerState chunk (len={}): {}", notification.value.len(), hex.join(" "));
                         dump_chunks += 1;
+                    } else {
+                        log_debug!(
+                            "[BLE] Notification: type=0x{:02X}, len={}",
+                            ptype,
+                            notification.value.len()
+                        );
                     }
                 }
             }
@@ -804,6 +811,60 @@ pub fn send_fx_preset(conn: &BleConnection, fx_id: u8, preset: u8) -> Result<(),
     send_ble_struct_command(conn, 0x31, &[fx_id, preset])
 }
 
+/// UI fader CC (0..=127) → dB on the −70…+10 scale (0 = OFF → −144).
+/// Inverse of fix8_to_level_cc; used to rebuild fix8 wire values from the
+/// model's stored CC levels.
+pub fn level_cc_to_db(cc: u8) -> f32 {
+    if cc == 0 {
+        -144.0
+    } else {
+        -70.0 + (cc as f32 - 1.0) / 126.0 * 80.0
+    }
+}
+
+/// FX channel state (0x30): the only documented writer that carries the FX
+/// return level (table 36 `vol` @0x8) — ChannelMaster 0x0C/0x0D→self and USB
+/// CC#7 on raw 10/11 are both dump-proven silently ignored for FX returns.
+/// Compact wire form (the serializer emits only the table's fields; type-6
+/// bools bit-pack 8/byte, the type-11 gains walk nested table 24 = one fix8
+/// sel-3 byte each, no count byte):
+/// [id][flags][vol fix8 sel3][pan fix8 sel1][val1][val2][val3][preset][7×gain]
+/// `preset_raw` is the dump's 1..=16 representation.
+#[allow(clippy::too_many_arguments)]
+pub fn send_fx_channel_state(
+    conn: &BleConnection,
+    fx_ch_id: u8,
+    muted: bool,
+    enable_main: bool,
+    enable_mon1: bool,
+    enable_mon2: bool,
+    vol_db: f32,
+    pan: u8,
+    val1: u8,
+    val2: u8,
+    val3: u8,
+    preset_raw: u8,
+    gains_db: &[f32; 7],
+) -> Result<(), String> {
+    let flags = muted as u8
+        | ((enable_main as u8) << 1)
+        | ((enable_mon1 as u8) << 2)
+        | ((enable_mon2 as u8) << 3);
+    let mut payload = Vec::with_capacity(15);
+    payload.push(fx_ch_id);
+    payload.push(flags);
+    payload.push(db_to_fix8(vol_db));
+    payload.push(pan);
+    payload.push(val1);
+    payload.push(val2);
+    payload.push(val3);
+    payload.push(preset_raw);
+    for db in gains_db {
+        payload.push(db_to_fix8(*db));
+    }
+    send_ble_struct_command(conn, 0x30, &payload)
+}
+
 // ── VU meters: MeterRequest (0x21); device streams MeterUpdate (0x22) ──
 const METER_UPDATE_TYPE: u8 = 0x22;
 // Official MeterRequest payload (field table 28): count byte + flat 15-byte
@@ -914,6 +975,13 @@ pub fn send_channel_master(conn: &BleConnection, id: u8, dst: u8, db: f32) -> Re
     send_ble_struct_command(conn, 0x06, &[id, dst, db_to_fix8(db)])
 }
 
+/// ChannelMute (0x08) TX: [id][flag] — works on input channels AND on the FX
+/// buses: the official app's FX mute button sends ChannelMute on
+/// FXBusChannel1/2Id (0x0C/0x0D) (queueUpdateFXChannelMutesCommandPackets).
+pub fn send_channel_mute(conn: &BleConnection, id: u8, muted: bool) -> Result<(), String> {
+    send_ble_struct_command(conn, 0x08, &[id, muted as u8])
+}
+
 /// Run the meter receive loop on its own thread, riding the main session's
 /// notification stream (a second subscribe() on the same connection stalls on
 /// BlueZ; the mixer answers meter polls only on an authenticated connection).
@@ -939,8 +1007,13 @@ async fn meter_loop(
     // and Mon2 (0xD9) — slots 10/11 always carry the SELECTED output's L/R
     // (disasm 0xb1564: the output id overwrites payload index 7), and
     // out_rot 0/1/2 maps to buses Main/Mon1/Mon2 in the UI consumer
+    // FLOW8_METER_OUT (hex) pins the poll to one output id — e.g. CC meters
+    // the FX1 bus directly (0x0C|0x40|0x80) to test the FX chain internally
+    let pinned_out = std::env::var("FLOW8_METER_OUT").ok().and_then(|s| {
+        u8::from_str_radix(s.trim_start_matches("0x").trim_start_matches("0X"), 16).ok()
+    });
     let mut out_rot = 0usize;
-    send_meter_poll(&peripheral, &characteristic, METER_OUTPUT_BYTES[out_rot]).await;
+    send_meter_poll(&peripheral, &characteristic, pinned_out.unwrap_or(METER_OUTPUT_BYTES[out_rot])).await;
     'outer: loop {
         // one poll in flight: the device paces exactly one 0x22 frame per
         // accepted poll (~410 ms on its own timer — frames arrive 410 ms
@@ -1022,7 +1095,7 @@ async fn meter_loop(
                     gr_slots.push(((gr >> (2 * i)) & 3) as u8);
                 }
                 gr_slots.push(((gr >> 14) & 3) as u8);
-                let _ = meter_tx.send(MeterMsg::Frame(values, out_rot, gr_slots));
+                let _ = meter_tx.send(MeterMsg::Frame(values, pinned_out.map(|_| 0).unwrap_or(out_rot), gr_slots));
                 out_rot = (out_rot + 1) % METER_OUTPUT_BYTES.len();
                 got_frame = true;
             } else if v.len() == 6
@@ -1072,7 +1145,7 @@ async fn meter_loop(
         }
         // the device freed the poll slot (frame landed or missed): send
         // the next request immediately — the device paces the answer itself
-        send_meter_poll(&peripheral, &characteristic, METER_OUTPUT_BYTES[out_rot]).await;
+        send_meter_poll(&peripheral, &characteristic, pinned_out.unwrap_or(METER_OUTPUT_BYTES[out_rot])).await;
     }
 }
 

@@ -321,16 +321,15 @@ fn subscription(_controller: &FLOW8Controller) -> Subscription<InterfaceMessage>
 fn update(controller: &mut FLOW8Controller, message: InterfaceMessage) {
     if let InterfaceMessage::BusLevel(_, bus_id, value) = &message {
         if *bus_id >= 10 {
-            // FX return fader: official ChannelMaster path (BLE 0x06, dst =
-            // the bus's own id) — the USB CC#7-on-raw-10/11 guess never showed
-            // an effect. ChannelMaster id space: Main=0x0F, Mon1/2=0x0A/0x0B,
-            // FX1/2=0x0C/0x0D. UI CC scale: −70…+10 dB, cc 0 = OFF (−144).
+            // FX return fader: ChannelMaster (0x06, dst = own id) — the
+            // official app's path for every output fader including FX.
+            // (The old "dead" proof was confounded: the FX bus meter is
+            // post-routing, so a working return still metered silence while
+            // FX routing to Main was off.) ChannelMaster id space:
+            // Main=0x0F, Mon1/2=0x0A/0x0B, FX1/2=0x0C/0x0D. UI CC scale:
+            // −70…+10 dB, cc 0 = OFF (−144).
             let cmd_id = 0x0A + (*bus_id - 8);
-            let db = if *value == 0 {
-                -144.0
-            } else {
-                -70.0 + (*value - 1) as f32 / 126.0 * 80.0
-            };
+            let db = ble::level_cc_to_db(*value);
             let conn_arc = controller.ble_connection.clone();
             std::thread::spawn(move || {
                 let Ok(guard) = conn_arc.lock() else {
@@ -597,10 +596,29 @@ fn update_interface(controller: &mut FLOW8Controller, message: InterfaceMessage)
                     }
                 });
 
-                // the device resets BOTH FX returns to OFF on a preset load
-                // (dump-proven: a return drag was wiped by the preset clicks
-                // 16 s later) — re-apply the stored fader levels once the
-                // load settles
+                // the device resets FX state on a preset load (sends
+                // dump-proven; routing wiped too — the user found FX→Main
+                // off) — re-assert routing + params via FXSetup and the
+                // stored return levels once the load settles
+                let setups: Vec<(u8, u8, u8, u8, bool, bool, bool)> = (0..2)
+                    .filter_map(|i| {
+                        let f = controller.fx_slots.get(i)?;
+                        let bus = controller
+                            .buses
+                            .iter()
+                            .filter(|b| b.bus_type == BusType::Fx)
+                            .nth(i)?;
+                        Some((
+                            0x0A + (bus.id - 8),
+                            f.param1,
+                            f.param2,
+                            f.param3,
+                            f.route_main,
+                            f.route_mon1,
+                            f.route_mon2,
+                        ))
+                    })
+                    .collect();
                 let returns: Vec<(u8, u8)> = controller
                     .buses
                     .iter()
@@ -614,17 +632,20 @@ fn update_interface(controller: &mut FLOW8Controller, message: InterfaceMessage)
                         return;
                     };
                     if let Some(conn) = guard.as_ref() {
+                        for (ch_id, p1, p2, p3, m, m1, m2) in setups {
+                            if let Err(e) =
+                                ble::send_fx_setup(conn, ch_id, p1, p2, p3, m, m1, m2)
+                            {
+                                log_warn!("[BLE] FX setup restore failed: {}", e);
+                            }
+                        }
                         for (ch_id, cc) in returns {
-                            let db = if cc == 0 {
-                                -144.0
-                            } else {
-                                -70.0 + (cc as f32 - 1.0) / 126.0 * 80.0
-                            };
+                            let db = ble::level_cc_to_db(cc);
                             if let Err(e) = ble::send_channel_master(conn, ch_id, ch_id, db) {
                                 log_warn!("[BLE] FX return restore failed: {}", e);
                             }
                         }
-                        log!("[BLE] FX returns restored after preset load");
+                        log!("[BLE] FX routing/params/returns restored after preset load");
                     }
                 });
             }

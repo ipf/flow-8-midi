@@ -5,7 +5,11 @@ use iced::{
     Center, Element, Fill,
 };
 
-const NAV_PAGES: [Page; 4] = [Page::Mixer, Page::Eq, Page::Sends, Page::Fx];
+// Eq and Sends pages are obsolete: the mixer view covers both (4-band EQ
+// per input strip, 9-band EQ per bus, fx send knobs, FX return faders).
+// Fx stays: it hosts the FX→Main routing checkboxes (the FX master switch)
+// and the preset selector — no mixer equivalent.
+const NAV_PAGES: [Page; 2] = [Page::Mixer, Page::Fx];
 
 const SYNCED_COLOR: iced::Color = iced::Color {
     r: 0.2,
