@@ -596,6 +596,37 @@ fn update_interface(controller: &mut FLOW8Controller, message: InterfaceMessage)
                         }
                     }
                 });
+
+                // the device resets BOTH FX returns to OFF on a preset load
+                // (dump-proven: a return drag was wiped by the preset clicks
+                // 16 s later) — re-apply the stored fader levels once the
+                // load settles
+                let returns: Vec<(u8, u8)> = controller
+                    .buses
+                    .iter()
+                    .filter(|b| b.bus_type == BusType::Fx)
+                    .map(|b| (0x0A + (b.id - 8), b.bus_strip.level))
+                    .collect();
+                let conn_arc = controller.ble_connection.clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_millis(600));
+                    let Ok(guard) = conn_arc.lock() else {
+                        return;
+                    };
+                    if let Some(conn) = guard.as_ref() {
+                        for (ch_id, cc) in returns {
+                            let db = if cc == 0 {
+                                -144.0
+                            } else {
+                                -70.0 + (cc as f32 - 1.0) / 126.0 * 80.0
+                            };
+                            if let Err(e) = ble::send_channel_master(conn, ch_id, ch_id, db) {
+                                log_warn!("[BLE] FX return restore failed: {}", e);
+                            }
+                        }
+                        log!("[BLE] FX returns restored after preset load");
+                    }
+                });
             }
         }
         InterfaceMessage::FxParam1(fx_id, value) => {

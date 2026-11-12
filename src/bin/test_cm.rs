@@ -32,21 +32,15 @@ fn main() {
 
     println!("connecting...");
     let conn = ble::connect_flow8_ble(st, sn, mt, se).expect("BLE connect");
-    println!("connected; loading AMBIENCE (preset 0) on FX1 (0x0C)");
-    ble::send_fx_preset(&conn, 0x0C, 0).expect("preset load");
+    println!("connected; loading FX presets (FX1 reverb 0, FX2 delay 0)");
+    ble::send_fx_preset(&conn, 0x0C, 0).expect("fx1 preset");
+    ble::send_fx_preset(&conn, 0x0D, 0).expect("fx2 preset");
     std::thread::sleep(Duration::from_secs(2));
 
-    println!("return ON (+10 dB) — phase 1");
-    ble::send_channel_master(&conn, 0x0C, 0x0C, 10.0).expect("cm on");
-    std::thread::sleep(Duration::from_secs(10));
-
-    println!("return OFF (−144 dB) — phase 2");
-    ble::send_channel_master(&conn, 0x0C, 0x0C, -144.0).expect("cm off");
-    std::thread::sleep(Duration::from_secs(10));
-
-    println!("return ON again — phase 3");
-    ble::send_channel_master(&conn, 0x0C, 0x0C, 10.0).expect("cm on");
-    std::thread::sleep(Duration::from_secs(10));
+    println!("parking FX returns at OFF (-144 dB)");
+    ble::send_channel_master(&conn, 0x0C, 0x0C, -144.0).expect("fx1 return");
+    ble::send_channel_master(&conn, 0x0D, 0x0D, -144.0).expect("fx2 return");
+    std::thread::sleep(Duration::from_secs(1));
 
     while let Ok(m) = mr.try_recv() {
         println!("{m:?}");
