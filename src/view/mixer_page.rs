@@ -4,7 +4,7 @@ use crate::model::{
     message::InterfaceMessage,
 };
 use crate::view::fx_page::{
-    build_mute_btn, build_param1_knob, build_param2_toggle, build_preset_pick,
+    build_mute_btn, build_param1_knob, build_param2_pick, build_preset_pick,
     build_route_checkbox, build_tap_tempo_btn,
 };
 use crate::view::widgets::{
@@ -504,7 +504,7 @@ fn build_bus_strip<'a>(
             col = col.push(top_row);
             col = col.push(build_preset_pick(f));
             col = col.push(build_param1_knob(f));
-            col = col.push(build_param2_toggle(
+            col = col.push(build_param2_pick(
                 f.id,
                 info.param2_off,
                 info.param2_on,

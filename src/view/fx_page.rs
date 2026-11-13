@@ -118,28 +118,42 @@ pub fn build_param1_knob(fx: &FxSlot) -> Element<'_, InterfaceMessage> {
     .into()
 }
 
-pub fn build_param2_toggle<'a>(
+pub fn build_param2_pick(
     fx_id: u8,
-    off_label: &'a str,
-    on_label: &'a str,
+    off_label: &'static str,
+    on_label: &'static str,
     is_on: bool,
     _is_synced: bool,
-) -> Element<'a, InterfaceMessage> {
-    // stacked checkboxes, same look as the routing checkboxes below;
-    // exactly one is checked
-    column![
-        checkbox::Checkbox::new(!is_on)
-            .label(off_label)
-            .on_toggle(move |_| InterfaceMessage::FxParam2(fx_id, 0))
-            .text_size(9)
-            .spacing(3),
-        checkbox::Checkbox::new(is_on)
-            .label(on_label)
-            .on_toggle(move |_| InterfaceMessage::FxParam2(fx_id, 100))
-            .text_size(9)
-            .spacing(3),
-    ]
-    .spacing(2)
+) -> Element<'static, InterfaceMessage> {
+    // dropdown like the preset select: exactly one of the two options
+    #[derive(Clone, PartialEq)]
+    struct ParamChoice {
+        value: u8,
+        name: &'static str,
+    }
+    impl std::fmt::Display for ParamChoice {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "{}", self.name)
+        }
+    }
+
+    let choices = vec![
+        ParamChoice {
+            value: 0,
+            name: off_label,
+        },
+        ParamChoice {
+            value: 100,
+            name: on_label,
+        },
+    ];
+    let selected = choices[if is_on { 1 } else { 0 }].clone();
+
+    pick_list(choices, Some(selected), move |c| {
+        InterfaceMessage::FxParam2(fx_id, c.value)
+    })
+    .text_size(9)
+    .padding([2, 4])
     .width(Fill)
     .into()
 }
