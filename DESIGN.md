@@ -116,22 +116,86 @@ One page: the mixer. (EQ/Sends/FX pages removed — the mixer strips cover
 everything: 4-band EQ per input, 9-band per bus, fx send knobs, FX
 returns, and the FX controls.)
 
-- **Channel strips** (mic 1-4, line/USB/BT…): name (inline rename),
-  phantom, 4-band EQ knobs, sends (FX1/FX2), pan, M/S buttons, fader +
-  meter + dB label, right-click = zero.
-- **Bus strips** (Mon 1, Mon 2, FX 1, FX 2, Main — group breaks between
-  Mon|FX|Main):
-  - Mon/Main: 9-band EQ (2 knobs/row) + Pan + Limiter, block floating
-    vertically centered between label and fader; fader + meter at the
-    bottom, aligned with channel faders.
-  - FX strips host the whole FX control set: M button (global FX mute,
-    channel-strip style, TAP tempo next to FX1's M), preset dropdown
-    (pick_list), param1 knob (intensity, sends FXSetup on change),
-    param2 dropdown (Instrument/Vocal, Wide/Narrow…), routing checkboxes
-    (Main/Mon1/Mon2, stacked), return fader.
-- **FX state model**: `FxSlot { preset, param1-3, route_main/mon1/mon2,
-  *_synced }`. `preset` is 0-based; the wire/dump raw byte is preset+1.
-- Default window 1500×700 (screen-override via `FLOW8_SCREEN=WxH`).
+### UI design decisions
+
+1. **Mixer is the only page.** Every control lives in a strip; the nav
+   bar is Mixer + a gear (Settings). Rationale: the old Eq/Sends/Fx
+   pages duplicated strip content (user directive: "Mixer is only
+   relevant").
+2. **Faders bottom-aligned across all strips** (channel + bus): every
+   strip ends with Level label + fader + meter + dB text, pushed to the
+   bottom by a Fill spacer, so fader caps form one visual line.
+3. **Bus row grouped Mon | FX | Main** with 3px group breaks (the same
+   break as between the channel and bus sections), 2px between strips.
+4. **Channel strip order** (top to bottom): name (inline rename, ✕
+   cancel) → M/S buttons → phantom → 4-band EQ knobs → FX sends → pan →
+   fader. Mirrors the official app's channel layout.
+5. **Mon/Main bus strips**: 9-band EQ at 2 knobs per row (3-per-row
+   overflowed the ~117px strip), then Pan and Limiter each on their own
+   row, Limiter directly above Level. The whole EQ + pan/limiter block
+   floats **vertically centered** between the strip label and the fader
+   (two Fill spacers share the leftover space) — everything clustered at
+   the top left a hole below.
+6. **FX strips host the full FX control set** (the old Fx page is gone):
+   - M button (global FX mute, channel-strip danger style, shown in
+     both strips since the state is one global flag), TAP tempo button
+     next to FX1's M (tap targets FX2 delay; global controls are kept
+     compact by living in FX1's strip)
+   - preset dropdown (pick_list; model preset is 0-based, wire byte is
+     preset+1)
+   - param1 knob (intensity/modulation, percent 0-100; sends FXSetup
+     on every change — knobs have no on-release)
+   - param2 dropdown (Instrument/Vocal, Wide/Narrow, Dull/Bright…)
+   - routing checkboxes stacked vertically (Main/Mon1/Mon2) — the FX
+     master switch that caused the original outage
+   - return fader (ChannelMaster 0x06 path)
+7. **FX strips stay top-anchored** (M at the top like channel M/S);
+   only Mon/Main blocks are centered.
+8. **Right-click = zero** on sliders (faders, sends); knobs reset via
+   drag to their default (knob canvas has no right-click).
+9. **Sync dots**: every adjustable value shows an unsynced dot (●) in
+   `UNSYNCED_COLOR` until the device echoes it (knobs, sliders, preset
+   label). Dropdowns/checkboxes show no dot (see inconsistencies).
+10. **Meters**: thin always-visible VU bars (dark track, lit portion);
+    GR slot when present. The FX bus meter is post-routing — it shows
+    signal only when FX routing is enabled.
+11. **Uniform control sizes**: all knobs 28px (channel EQ, bus EQ, FX
+    param1), sliders 150px (channels) / 150px buses, one label scale
+    (strip label 14, control labels 10-12, dB text 10).
+12. **Spacing scale**: strip internal spacing 2, group breaks 3,
+    padding [6,3]; window default 1500×700 (`FLOW8_SCREEN=WxH` override).
+13. **FX state model single source**: `FxSlot` in the model; every FX
+    control writes the model first, then a service action — view never
+    holds state.
+
+### UI inconsistencies & open proposals
+
+1. **Eq/Sends pages are dead code.** `view_eq`/`view_sends` match arms
+   are unreachable (nav = Mixer only), and they carry duplicated FX
+   fader logic (`TABS`, `FX_BUS_FADER_HEIGHT`). Transitively dead:
+   `MonitorTab` message + `monitor_tab` model field + its midi_mapper
+   arm. Proposal: delete both modules + the dead message/field
+   (~500 lines, zero runtime cost).
+2. **`fx_page.rs` is no longer a page** — it only holds the compact FX
+   widget builders. Proposal: rename to `fx_widgets.rs` (mechanical).
+3. **`PresetChoice` and `ParamChoice` are duplicate wrappers** in
+   fx_page.rs (both `{value/idx, name}` + Display). Proposal: one
+   shared `Choice { value: u8, name: &'static str }`.
+4. **Sync feedback is inconsistent**: routing checkboxes and the param2
+   dropdown show no unsynced dot (model has no route/param2-sync flags).
+   Bounded risk: preset loads re-assert routing+params, so drift is
+   rare. Proposal (optional): add `*_synced` flags for routing.
+5. **M button appears in both FX strips** (one global flag shown
+   twice) while TAP lives only in FX1. Proposal: keep (state visibility
+   beats asymmetry) or move M to FX1 only for the strict
+   "global controls in FX1" rule.
+6. **Bus fader paths differ**: FX returns go BLE ChannelMaster;
+   Mon/Main bus faders still go USB CC#7 (`channel = bus_id`) — that
+   path is unverified against the meter. Proposal: verify Mon/Main
+   faders audibly; if dead, move all bus faders to ChannelMaster
+   (official path for every output).
+7. **Label sizes differ**: channel name 11 (button) vs bus label 14.
+   Proposal: unify to 13.
 
 ## MIDI mapping (USB CC)
 
