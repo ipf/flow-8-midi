@@ -127,13 +127,12 @@ pub fn view_mixer(controller: &FLOW8Controller) -> Element<'_, InterfaceMessage>
         BusType::Fx => 1,
         BusType::Main => 2,
     });
-    // FX strips get extra width: they host the preset grid + FX controls
+    // FX strips are normal width now: M + dropdown + knob + toggle fit
     let mut bus_row = iced::widget::Row::new().spacing(3).width(Fill).height(Fill);
     for b in buses {
-        let portion = if b.bus_type == BusType::Fx { 2 } else { 1 };
         bus_row = bus_row.push(
             container(build_bus_strip(b, controller))
-                .width(Length::FillPortion(portion))
+                .width(Length::FillPortion(1))
                 .height(Fill),
         );
     }
@@ -508,8 +507,8 @@ fn build_bus_strip<'a>(
             col = col.push(
                 row![
                     build_route_checkbox(f, 0, "Main"),
-                    build_route_checkbox(f, 1, "Mon 1"),
-                    build_route_checkbox(f, 2, "Mon 2"),
+                    build_route_checkbox(f, 1, "Mon1"),
+                    build_route_checkbox(f, 2, "Mon2"),
                 ]
                 .spacing(2),
             );

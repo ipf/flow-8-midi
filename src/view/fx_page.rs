@@ -191,7 +191,7 @@ pub fn build_route_checkbox<'a>(
     checkbox::Checkbox::new(checked)
         .label(label)
         .on_toggle(move |_| InterfaceMessage::FxRouting(fx_id, routing.0, routing.1, routing.2))
-        .text_size(10)
-        .spacing(3)
+        .text_size(9)
+        .spacing(2)
         .into()
 }
