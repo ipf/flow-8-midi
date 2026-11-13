@@ -652,8 +652,8 @@ fn update_interface(controller: &mut FLOW8Controller, message: InterfaceMessage)
             let f = &mut controller.fx_slots[fx_id as usize];
             f.param1 = value;
             f.param1_synced = true;
-        }
-        InterfaceMessage::FxParam1Send(fx_id) => {
+            // knob on_change fires per drag frame — same as every other
+            // knob (USB CC path); the BLE write serializes on the lock
             send_fx_setup(controller, fx_id);
         }
         InterfaceMessage::FxParam2(fx_id, value) => {

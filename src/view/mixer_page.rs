@@ -4,7 +4,7 @@ use crate::model::{
     message::InterfaceMessage,
 };
 use crate::view::fx_page::{
-    build_mute_btn, build_param1_slider, build_param2_toggle, build_preset_grid,
+    build_mute_btn, build_param1_knob, build_param2_toggle, build_preset_pick,
     build_route_checkbox, build_tap_tempo_btn,
 };
 use crate::view::widgets::{
@@ -482,14 +482,22 @@ fn build_bus_strip<'a>(
     col = col.push(text(bus.label()).size(14));
 
     // 9-band EQ knobs (3×3 grid), same data as the EQ page. FX buses have
-    // no 9-band EQ — their strip hosts the FX controls instead (preset
-    // grid, param1, param2 toggle, routing; the old Fx page is gone).
+    // no 9-band EQ — their strip hosts the FX controls instead (M mute,
+    // preset dropdown, param1 knob, param2 toggle, routing; the old Fx
+    // page is gone).
     if bus.bus_type == BusType::Fx {
         let fx_idx = (bus.index - 3) as usize; // buses: 0=Main 1=Mon1 2=Mon2 3=FX1 4=FX2
         if let Some(f) = controller.fx_slots.get(fx_idx) {
             let info = f.preset_info();
-            col = col.push(build_preset_grid(f));
-            col = col.push(build_param1_slider(f));
+            // top row like the channel strips: M (global FX mute); FX1's
+            // strip also hosts the tap tempo button
+            let mut top_row = row![build_mute_btn(controller.fx_muted)].spacing(3);
+            if fx_idx == 0 {
+                top_row = top_row.push(build_tap_tempo_btn(controller.current_tap_bpm()));
+            }
+            col = col.push(top_row);
+            col = col.push(build_preset_pick(f));
+            col = col.push(build_param1_knob(f));
             col = col.push(build_param2_toggle(
                 f.id,
                 info.param2_off,
@@ -505,17 +513,6 @@ fn build_bus_strip<'a>(
                 ]
                 .spacing(2),
             );
-            if fx_idx == 0 {
-                // global FX controls (not per-bus): mute + tap tempo live
-                // in FX1's strip
-                col = col.push(
-                    row![
-                        build_mute_btn(controller.fx_muted),
-                        build_tap_tempo_btn(controller.current_tap_bpm()),
-                    ]
-                    .spacing(3),
-                );
-            }
         }
     } else if bus.has_nine_band_eq() {
         let eq = &bus.nine_band_eq;
