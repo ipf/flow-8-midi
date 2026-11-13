@@ -6,17 +6,10 @@ use crate::model::{
     channels::FxSlot,
     message::InterfaceMessage,
 };
-use crate::view::widgets::{format_percent, knob, sync_label, UNSYNCED_COLOR};
+use crate::view::widgets::{format_percent, knob, sync_label};
 use iced::{
-    widget::{button, checkbox, column, container, pick_list, row, text, tooltip},
+    widget::{button, checkbox, column, container, pick_list, radio, text, tooltip},
     Center, Element, Fill,
-};
-
-const TOGGLE_ON_COLOR: iced::Color = iced::Color {
-    r: 0.6,
-    g: 0.3,
-    b: 0.9,
-    a: 1.0,
 };
 
 const MUTE_COLOR: iced::Color = iced::Color {
@@ -28,10 +21,12 @@ const MUTE_COLOR: iced::Color = iced::Color {
 
 /// "M" mute button, channel-strip style (danger when muted). FX mute is
 /// global (both FX processors), so both FX strips show the same state.
+/// Same geometry as TAP so the top row's buttons are even-sized.
 pub fn build_mute_btn(fx_muted: bool) -> Element<'static, InterfaceMessage> {
-    let btn = button(text("M").size(12))
+    let btn = button(text("M").size(10).center())
         .on_press(InterfaceMessage::FxMute)
-        .padding([4, 10]);
+        .padding([4, 0])
+        .width(Fill);
     if fx_muted {
         btn.style(move |theme, status| {
             let mut style = button::danger(theme, status);
@@ -51,7 +46,8 @@ pub fn build_tap_tempo_btn(bpm: Option<u16>) -> Element<'static, InterfaceMessag
     };
     let tap_btn = button(text(label).size(10).center())
         .on_press(InterfaceMessage::TapTempo)
-        .padding([4, 6])
+        .padding([4, 0])
+        .width(Fill)
         .style(button::secondary);
 
     tooltip(
@@ -127,53 +123,25 @@ pub fn build_param2_toggle<'a>(
     off_label: &'a str,
     on_label: &'a str,
     is_on: bool,
-    is_synced: bool,
+    _is_synced: bool,
 ) -> Element<'a, InterfaceMessage> {
-    let off_btn = if !is_on {
-        button(text(off_label).size(9).center())
-            .padding([4, 2])
-            .width(Fill)
-            .style(move |theme, status| {
-                let mut style = button::primary(theme, status);
-                style.background = Some(iced::Background::Color(TOGGLE_ON_COLOR));
-                style
-            })
-    } else {
-        button(text(off_label).size(9).center())
-            .on_press(InterfaceMessage::FxParam2(fx_id, 0))
-            .padding([4, 2])
-            .width(Fill)
-            .style(button::secondary)
-    };
-
-    let on_btn = if is_on {
-        button(text(on_label).size(9).center())
-            .padding([4, 2])
-            .width(Fill)
-            .style(move |theme, status| {
-                let mut style = button::primary(theme, status);
-                style.background = Some(iced::Background::Color(TOGGLE_ON_COLOR));
-                style
-            })
-    } else {
-        button(text(on_label).size(9).center())
-            .on_press(InterfaceMessage::FxParam2(fx_id, 100))
-            .padding([4, 2])
-            .width(Fill)
-            .style(button::secondary)
-    };
-
-    let sync_dot = if is_synced {
-        text("")
-    } else {
-        text("\u{25CF} ").size(9).color(UNSYNCED_COLOR)
-    };
-
-    row![sync_dot, off_btn, on_btn]
-        .spacing(3)
-        .align_y(Center)
-        .width(Fill)
-        .into()
+    // stacked vertically like the routing checkboxes below — the two
+    // options are too wide for the strip side by side
+    column![
+        radio::Radio::new(off_label, false, Some(is_on), move |_| {
+            InterfaceMessage::FxParam2(fx_id, 0)
+        })
+        .text_size(9)
+        .spacing(3),
+        radio::Radio::new(on_label, true, Some(is_on), move |_| {
+            InterfaceMessage::FxParam2(fx_id, 100)
+        })
+        .text_size(9)
+        .spacing(3),
+    ]
+    .spacing(2)
+    .width(Fill)
+    .into()
 }
 
 pub fn build_route_checkbox<'a>(

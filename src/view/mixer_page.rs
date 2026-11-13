@@ -130,6 +130,10 @@ pub fn view_mixer(controller: &FLOW8Controller) -> Element<'_, InterfaceMessage>
     // FX strips are normal width now: M + dropdown + knob + toggle fit
     let mut bus_row = iced::widget::Row::new().spacing(3).width(Fill).height(Fill);
     for b in buses {
+        // same visual break as between the channels and the buses
+        if b.bus_type == BusType::Main {
+            bus_row = bus_row.push(Space::new().width(6));
+        }
         bus_row = bus_row.push(
             container(build_bus_strip(b, controller))
                 .width(Length::FillPortion(1))
@@ -505,7 +509,9 @@ fn build_bus_strip<'a>(
                 f.param2_synced,
             ));
             col = col.push(
-                row![
+                // routing stacked vertically: reads cleaner than a
+                // horizontal row in a narrow strip
+                column![
                     build_route_checkbox(f, 0, "Main"),
                     build_route_checkbox(f, 1, "Mon1"),
                     build_route_checkbox(f, 2, "Mon2"),
@@ -526,7 +532,8 @@ fn build_bus_strip<'a>(
             ("8k", eq.freq_8_khz, 7),
             ("16k", eq.freq_16_khz, 8),
         ];
-        for chunk in bands.chunks(3) {
+        // 2 knobs per row: 3×3 overflows the strip width
+        for chunk in bands.chunks(2) {
             let mut eq_row = row![].spacing(4);
             for &(label, value, band_index) in chunk {
                 eq_row = eq_row.push(knob_slot_s(
@@ -544,38 +551,33 @@ fn build_bus_strip<'a>(
         }
     }
 
-    // Pan (Main only; reserved slot on Mon) + Limiter (Main/Mon) as knobs,
-    // above the fader like the channel strips. FX strips skip this row:
-    // the FX controls above already fill their width/height.
-        if bus.bus_type != BusType::Fx {
-            let pan_slot: Element<InterfaceMessage> = if bus.has_balance() {
-                knob_slot(
-                    "Pan",
-                    bus.bus_strip.balance_synced,
-                    0..=127,
-                    bus.bus_strip.balance,
-                    64,
-                    move |v| InterfaceMessage::BusBalance(bus_idx, bus_id, v),
-                    format_pan(bus.bus_strip.balance),
-                )
-            } else {
-                Space::new().height(Length::Fixed(KNOB_SLOT_HEIGHT)).into()
-            };
-            let limiter_slot: Element<InterfaceMessage> = if bus.has_limiter() {
-                knob_slot(
-                    "Limiter",
-                    bus.bus_strip.limiter_synced,
-                    0..=127,
-                    bus.bus_strip.limiter,
-                    127,
-                    move |v| InterfaceMessage::BusLimiter(bus_idx, bus_id, v),
-                    format_limiter(bus.bus_strip.limiter),
-                )
-            } else {
-                Space::new().height(Length::Fixed(KNOB_SLOT_HEIGHT)).into()
-            };
-            col = col.push(row![pan_slot, limiter_slot].spacing(4));
+    // Pan (Main) and Limiter (Main/Mon) each on their own row, Limiter
+    // directly above the Level. FX strips skip both: the FX controls
+    // above already fill their width/height.
+    if bus.bus_type != BusType::Fx {
+        if bus.has_balance() {
+            col = col.push(knob_slot(
+                "Pan",
+                bus.bus_strip.balance_synced,
+                0..=127,
+                bus.bus_strip.balance,
+                64,
+                move |v| InterfaceMessage::BusBalance(bus_idx, bus_id, v),
+                format_pan(bus.bus_strip.balance),
+            ));
         }
+        if bus.has_limiter() {
+            col = col.push(knob_slot(
+                "Limiter",
+                bus.bus_strip.limiter_synced,
+                0..=127,
+                bus.bus_strip.limiter,
+                127,
+                move |v| InterfaceMessage::BusLimiter(bus_idx, bus_id, v),
+                format_limiter(bus.bus_strip.limiter),
+            ));
+        }
+    }
 
     // bottom-anchor: bus faders line up with the channel faders
     col = col.push(Space::new().height(Fill));
