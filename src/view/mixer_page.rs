@@ -523,6 +523,9 @@ fn build_bus_strip<'a>(
             );
         }
     } else if bus.has_nine_band_eq() {
+        // the EQ + pan/limiter block floats centered between the label
+        // and the fader — the two Fill spacers share the leftover space
+        col = col.push(Space::new().height(Fill));
         let eq = &bus.nine_band_eq;
         let bands: [(&str, u8, u8); 9] = [
             ("62", eq.freq_62_hz, 0),
@@ -580,6 +583,7 @@ fn build_bus_strip<'a>(
                 format_limiter(bus.bus_strip.limiter),
             ));
         }
+        col = col.push(Space::new().height(Fill));
     }
 
     // bottom-anchor: bus faders line up with the channel faders
