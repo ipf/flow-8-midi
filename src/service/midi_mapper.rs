@@ -32,7 +32,6 @@ pub fn match_midi_command(
         | InterfaceMessage::BleConnect
         | InterfaceMessage::BleRequestDump
         | InterfaceMessage::SyncIntervalChanged(_)
-        | InterfaceMessage::MonitorTab(_)
         | InterfaceMessage::RenameStartChannel(_)
         | InterfaceMessage::RenameStartSnapshot(_)
         | InterfaceMessage::SnapshotSaveStart(_)

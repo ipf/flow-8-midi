@@ -6,8 +6,8 @@ pub mod service;
 mod view;
 
 use view::{
-    device_select_page::view_device_select, eq_page::view_eq,
-    mixer_page::view_mixer, nav_bar::view_nav_bar, sends_page::view_sends, settings_page::view_settings,
+    device_select_page::view_device_select,
+    mixer_page::view_mixer, nav_bar::view_nav_bar, settings_page::view_settings,
 };
 use image::load_from_memory;
 use service::ble;
@@ -379,8 +379,6 @@ fn view(controller: &FLOW8Controller) -> Element<'_, InterfaceMessage> {
 
     let page_content = match controller.current_page {
         Page::Mixer => view_mixer(controller),
-        Page::Eq => view_eq(controller),
-        Page::Sends => view_sends(controller),
         Page::Settings => view_settings(controller),
         Page::DeviceSelect => unreachable!(),
     };
@@ -558,10 +556,6 @@ fn update_interface(controller: &mut FLOW8Controller, message: InterfaceMessage)
                 eq.bands_synced[band_index as usize] = true;
             }
         }
-        InterfaceMessage::MonitorTab(tab) => {
-            controller.monitor_tab = tab;
-        }
-
         InterfaceMessage::FxPreset(fx_id, preset) => {
             let f = &mut controller.fx_slots[fx_id as usize];
             f.preset = preset;
