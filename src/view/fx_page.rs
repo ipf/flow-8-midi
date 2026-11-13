@@ -8,7 +8,7 @@ use crate::model::{
 };
 use crate::view::widgets::{format_percent, knob, sync_label};
 use iced::{
-    widget::{button, checkbox, column, container, pick_list, radio, text, tooltip},
+    widget::{button, checkbox, column, container, pick_list, text, tooltip},
     Center, Element, Fill,
 };
 
@@ -125,19 +125,19 @@ pub fn build_param2_toggle<'a>(
     is_on: bool,
     _is_synced: bool,
 ) -> Element<'a, InterfaceMessage> {
-    // stacked vertically like the routing checkboxes below — the two
-    // options are too wide for the strip side by side
+    // stacked checkboxes, same look as the routing checkboxes below;
+    // exactly one is checked
     column![
-        radio::Radio::new(off_label, false, Some(is_on), move |_| {
-            InterfaceMessage::FxParam2(fx_id, 0)
-        })
-        .text_size(9)
-        .spacing(3),
-        radio::Radio::new(on_label, true, Some(is_on), move |_| {
-            InterfaceMessage::FxParam2(fx_id, 100)
-        })
-        .text_size(9)
-        .spacing(3),
+        checkbox::Checkbox::new(!is_on)
+            .label(off_label)
+            .on_toggle(move |_| InterfaceMessage::FxParam2(fx_id, 0))
+            .text_size(9)
+            .spacing(3),
+        checkbox::Checkbox::new(is_on)
+            .label(on_label)
+            .on_toggle(move |_| InterfaceMessage::FxParam2(fx_id, 100))
+            .text_size(9)
+            .spacing(3),
     ]
     .spacing(2)
     .width(Fill)

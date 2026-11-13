@@ -128,12 +128,15 @@ pub fn view_mixer(controller: &FLOW8Controller) -> Element<'_, InterfaceMessage>
         BusType::Main => 2,
     });
     // FX strips are normal width now: M + dropdown + knob + toggle fit
-    let mut bus_row = iced::widget::Row::new().spacing(3).width(Fill).height(Fill);
+    let mut bus_row = iced::widget::Row::new().spacing(2).width(Fill).height(Fill);
+    let mut prev_type: Option<BusType> = None;
     for b in buses {
-        // same visual break as between the channels and the buses
-        if b.bus_type == BusType::Main {
-            bus_row = bus_row.push(Space::new().width(6));
+        // same visual break between the bus groups (Mon | FX | Main) as
+        // between the channels and the buses
+        if prev_type.is_some_and(|pt| pt != b.bus_type) {
+            bus_row = bus_row.push(Space::new().width(3));
         }
+        prev_type = Some(b.bus_type);
         bus_row = bus_row.push(
             container(build_bus_strip(b, controller))
                 .width(Length::FillPortion(1))
@@ -145,7 +148,7 @@ pub fn view_mixer(controller: &FLOW8Controller) -> Element<'_, InterfaceMessage>
         .width(Length::FillPortion(4))
         .height(Fill);
 
-    row![channels_section, Space::new().width(6), buses_section]
+    row![channels_section, Space::new().width(3), buses_section]
         .width(Fill)
         .height(Fill)
         .padding([0, 10])
@@ -476,8 +479,8 @@ fn build_bus_strip<'a>(
         .width(Fill)
         .height(Fill)
         .align_x(Center)
-        .spacing(4)
-        .padding([8, 6]);
+        .spacing(2)
+        .padding([6, 3]);
 
     let bus_idx = bus.index;
     let bus_id = bus.id;
@@ -534,7 +537,7 @@ fn build_bus_strip<'a>(
         ];
         // 2 knobs per row: 3×3 overflows the strip width
         for chunk in bands.chunks(2) {
-            let mut eq_row = row![].spacing(4);
+            let mut eq_row = row![].spacing(2);
             for &(label, value, band_index) in chunk {
                 eq_row = eq_row.push(knob_slot_s(
                     label,
