@@ -3,6 +3,10 @@ use crate::model::{
     flow8::{FLOW8Controller, RenameTarget},
     message::InterfaceMessage,
 };
+use crate::view::fx_page::{
+    build_mute_btn, build_param1_slider, build_param2_toggle, build_preset_grid,
+    build_route_checkbox, build_tap_tempo_btn,
+};
 use crate::view::widgets::{
     knob, sync_dot, sync_label, v_slider, on_right_click, LEVEL_ZERO_DB,
     format_gain, format_level, format_pan, format_comp, format_lowcut, format_limiter,
@@ -111,7 +115,7 @@ pub fn view_mixer(controller: &FLOW8Controller) -> Element<'_, InterfaceMessage>
             .width(Fill)
             .height(Fill),
     )
-    .width(Length::FillPortion(7))
+    .width(Length::FillPortion(6))
     .height(Fill);
 
     // Main fader rightmost: monitors, then FX returns (FX1/FX2 = the send
@@ -123,17 +127,20 @@ pub fn view_mixer(controller: &FLOW8Controller) -> Element<'_, InterfaceMessage>
         BusType::Fx => 1,
         BusType::Main => 2,
     });
-    let bus_strips: Vec<Element<InterfaceMessage>> =
-        buses.into_iter().map(|b| build_bus_strip(b)).collect();
+    // FX strips get extra width: they host the preset grid + FX controls
+    let mut bus_row = iced::widget::Row::new().spacing(3).width(Fill).height(Fill);
+    for b in buses {
+        let portion = if b.bus_type == BusType::Fx { 2 } else { 1 };
+        bus_row = bus_row.push(
+            container(build_bus_strip(b, controller))
+                .width(Length::FillPortion(portion))
+                .height(Fill),
+        );
+    }
 
-    let buses_section = container(
-        iced::widget::Row::with_children(bus_strips)
-            .spacing(3)
-            .width(Fill)
-            .height(Fill),
-    )
-    .width(Length::FillPortion(3))
-    .height(Fill);
+    let buses_section = container(bus_row)
+        .width(Length::FillPortion(4))
+        .height(Fill);
 
     row![channels_section, Space::new().width(6), buses_section]
         .width(Fill)
@@ -458,7 +465,10 @@ fn add_mute_solo<'a>(
     )
 }
 
-fn build_bus_strip(bus: &Bus) -> Element<'_, InterfaceMessage> {
+fn build_bus_strip<'a>(
+    bus: &'a Bus,
+    controller: &'a FLOW8Controller,
+) -> Element<'a, InterfaceMessage> {
     let mut col = Column::new()
         .width(Fill)
         .height(Fill)
@@ -471,9 +481,43 @@ fn build_bus_strip(bus: &Bus) -> Element<'_, InterfaceMessage> {
 
     col = col.push(text(bus.label()).size(14));
 
-    // 9-band EQ knobs (3×3 grid), same data as the EQ page — FX buses have
-    // no 9-band EQ (their strip is level-only: FX return fader)
-    if bus.has_nine_band_eq() {
+    // 9-band EQ knobs (3×3 grid), same data as the EQ page. FX buses have
+    // no 9-band EQ — their strip hosts the FX controls instead (preset
+    // grid, param1, param2 toggle, routing; the old Fx page is gone).
+    if bus.bus_type == BusType::Fx {
+        let fx_idx = (bus.index - 3) as usize; // buses: 0=Main 1=Mon1 2=Mon2 3=FX1 4=FX2
+        if let Some(f) = controller.fx_slots.get(fx_idx) {
+            let info = f.preset_info();
+            col = col.push(build_preset_grid(f));
+            col = col.push(build_param1_slider(f));
+            col = col.push(build_param2_toggle(
+                f.id,
+                info.param2_off,
+                info.param2_on,
+                f.param2_is_on(),
+                f.param2_synced,
+            ));
+            col = col.push(
+                row![
+                    build_route_checkbox(f, 0, "Main"),
+                    build_route_checkbox(f, 1, "Mon 1"),
+                    build_route_checkbox(f, 2, "Mon 2"),
+                ]
+                .spacing(2),
+            );
+            if fx_idx == 0 {
+                // global FX controls (not per-bus): mute + tap tempo live
+                // in FX1's strip
+                col = col.push(
+                    row![
+                        build_mute_btn(controller.fx_muted),
+                        build_tap_tempo_btn(controller.current_tap_bpm()),
+                    ]
+                    .spacing(3),
+                );
+            }
+        }
+    } else if bus.has_nine_band_eq() {
         let eq = &bus.nine_band_eq;
         let bands: [(&str, u8, u8); 9] = [
             ("62", eq.freq_62_hz, 0),
@@ -505,34 +549,37 @@ fn build_bus_strip(bus: &Bus) -> Element<'_, InterfaceMessage> {
     }
 
     // Pan (Main only; reserved slot on Mon) + Limiter (Main/Mon) as knobs,
-    // above the fader like the channel strips
-    let pan_slot: Element<InterfaceMessage> = if bus.has_balance() {
-        knob_slot(
-            "Pan",
-            bus.bus_strip.balance_synced,
-            0..=127,
-            bus.bus_strip.balance,
-            64,
-            move |v| InterfaceMessage::BusBalance(bus_idx, bus_id, v),
-            format_pan(bus.bus_strip.balance),
-        )
-    } else {
-        Space::new().height(Length::Fixed(KNOB_SLOT_HEIGHT)).into()
-    };
-    let limiter_slot: Element<InterfaceMessage> = if bus.has_limiter() {
-        knob_slot(
-            "Limiter",
-            bus.bus_strip.limiter_synced,
-            0..=127,
-            bus.bus_strip.limiter,
-            127,
-            move |v| InterfaceMessage::BusLimiter(bus_idx, bus_id, v),
-            format_limiter(bus.bus_strip.limiter),
-        )
-    } else {
-        Space::new().height(Length::Fixed(KNOB_SLOT_HEIGHT)).into()
-    };
-    col = col.push(row![pan_slot, limiter_slot].spacing(4));
+    // above the fader like the channel strips. FX strips skip this row:
+    // the FX controls above already fill their width/height.
+        if bus.bus_type != BusType::Fx {
+            let pan_slot: Element<InterfaceMessage> = if bus.has_balance() {
+                knob_slot(
+                    "Pan",
+                    bus.bus_strip.balance_synced,
+                    0..=127,
+                    bus.bus_strip.balance,
+                    64,
+                    move |v| InterfaceMessage::BusBalance(bus_idx, bus_id, v),
+                    format_pan(bus.bus_strip.balance),
+                )
+            } else {
+                Space::new().height(Length::Fixed(KNOB_SLOT_HEIGHT)).into()
+            };
+            let limiter_slot: Element<InterfaceMessage> = if bus.has_limiter() {
+                knob_slot(
+                    "Limiter",
+                    bus.bus_strip.limiter_synced,
+                    0..=127,
+                    bus.bus_strip.limiter,
+                    127,
+                    move |v| InterfaceMessage::BusLimiter(bus_idx, bus_id, v),
+                    format_limiter(bus.bus_strip.limiter),
+                )
+            } else {
+                Space::new().height(Length::Fixed(KNOB_SLOT_HEIGHT)).into()
+            };
+            col = col.push(row![pan_slot, limiter_slot].spacing(4));
+        }
 
     // bottom-anchor: bus faders line up with the channel faders
     col = col.push(Space::new().height(Fill));

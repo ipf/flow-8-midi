@@ -1,18 +1,16 @@
+// Compact FX controls embedded in the mixer's FX bus strips (the old Fx
+// page is gone — the mixer is the only page). Each FX strip: 2×8 preset
+// grid, param1 slider, param2 toggle, routing checkboxes; FX1's strip
+// also hosts the global FX mute + tap tempo.
 use crate::model::{
-    channels::{Bus, BusType, FxSlot},
-    flow8::FLOW8Controller,
+    channels::FxSlot,
     message::InterfaceMessage,
 };
-use crate::view::widgets::{
-    sync_label, v_slider, format_level, format_percent, on_right_click, LEVEL_ZERO_DB,
-    UNSYNCED_COLOR,
-};
+use crate::view::widgets::{sync_label, UNSYNCED_COLOR};
 use iced::{
     widget::{button, checkbox, column, container, row, slider, text, tooltip, Column, Row, Space},
     Center, Element, Fill,
 };
-
-const FX_BUS_FADER_HEIGHT: f32 = 220.0;
 
 const TOGGLE_ON_COLOR: iced::Color = iced::Color {
     r: 0.6,
@@ -28,104 +26,7 @@ const MUTE_COLOR: iced::Color = iced::Color {
     a: 1.0,
 };
 
-pub fn view_fx(controller: &FLOW8Controller) -> Element<'_, InterfaceMessage> {
-    let fx_buses: Vec<&Bus> = controller.buses.iter().filter(|b| b.bus_type == BusType::Fx).collect();
-
-    let fx1_col = build_fx_slot_column(&controller.fx_slots[0]);
-    let fx2_col = build_fx_slot_column(&controller.fx_slots[1]);
-
-    let fx1_bus_col = build_fx_bus_fader(fx_buses.first().copied());
-    let fx2_bus_col = build_fx_bus_fader(fx_buses.get(1).copied());
-
-    let tap_tempo = build_tap_tempo_btn(controller.current_tap_bpm());
-    let mute_btn = build_mute_btn(controller.fx_muted);
-
-    let slots_row = row![
-        container(fx1_col).width(Fill),
-        Space::new().width(4),
-        fx1_bus_col,
-        Space::new().width(12),
-        container(fx2_col).width(Fill),
-        Space::new().width(4),
-        fx2_bus_col,
-    ]
-    .width(Fill);
-
-    let bottom_bar = row![mute_btn, tap_tempo]
-        .align_y(Center)
-        .spacing(16);
-
-    column![
-        slots_row,
-        Space::new().height(20),
-        container(bottom_bar).center_x(Fill),
-    ]
-    .width(Fill)
-    .height(Fill)
-    .padding([8, 10])
-    .into()
-}
-
-fn build_fx_slot_column(fx: &FxSlot) -> Element<'_, InterfaceMessage> {
-    let fx_id = fx.id;
-    let info = fx.preset_info();
-    let is_on = fx.param2_is_on();
-
-    let preset_grid = build_preset_grid(fx);
-
-    let param1_row = row![
-        sync_label(info.param1_label, 12.0, fx.param1_synced).width(80),
-        tooltip(
-            slider(0..=100, fx.param1, move |v| InterfaceMessage::FxParam1(fx_id, v))
-                .width(Fill)
-                // model updates per drag frame; send the settled value once on release
-                .on_release(InterfaceMessage::FxParam1Send(fx_id)),
-            container(text(format_percent(fx.param1)).size(10))
-                .padding(4)
-                .style(container::rounded_box),
-            tooltip::Position::Top,
-        )
-        .gap(4),
-    ]
-    .align_y(Center)
-    .spacing(8)
-    .width(Fill);
-
-    let param2_toggle = build_param2_toggle(fx_id, info.param2_off, info.param2_on, is_on, fx.param2_synced);
-
-    let routing_row = row![
-        text("Out").size(12).width(80),
-        build_route_checkbox(fx, 0, "Main"),
-        build_route_checkbox(fx, 1, "Mon 1"),
-        build_route_checkbox(fx, 2, "Mon 2"),
-    ]
-    .align_y(Center)
-    .spacing(8)
-    .width(Fill);
-
-    let content = column![
-        text(format!("FX {}", fx_id + 1)).size(15),
-        Space::new().height(6),
-        preset_grid,
-        Space::new().height(10),
-        param1_row,
-        Space::new().height(8),
-        param2_toggle,
-        Space::new().height(8),
-        routing_row,
-    ]
-    .padding([12, 10])
-    .width(Fill)
-    .spacing(2);
-
-    container(content)
-        .style(container::rounded_box)
-        .width(Fill)
-        .padding(2)
-        .into()
-}
-
-fn build_route_checkbox<'a>(
+pub fn build_route_checkbox<'a>(
     fx: &'a FxSlot,
     which: usize,
     label: &'a str,
@@ -140,42 +41,17 @@ fn build_route_checkbox<'a>(
     checkbox::Checkbox::new(checked)
         .label(label)
         .on_toggle(move |_| InterfaceMessage::FxRouting(fx_id, routing.0, routing.1, routing.2))
-        .text_size(11)
-        .spacing(4)
+        .text_size(10)
+        .spacing(3)
         .into()
 }
 
-fn build_fx_bus_fader(bus: Option<&Bus>) -> Element<'_, InterfaceMessage> {
-    if let Some(bus) = bus {
-        let bus_idx = bus.index;
-        let bus_id = bus.id;
-
-        column![
-            text(bus.label()).size(12),
-            Space::new().height(4),
-            sync_label("Level", 10.0, bus.bus_strip.level_synced),
-            on_right_click(
-                v_slider(1..=127, bus.bus_strip.level, FX_BUS_FADER_HEIGHT, move |v| {
-                    InterfaceMessage::BusLevel(bus_idx, bus_id, v)
-                }, format_level(bus.bus_strip.level)),
-                InterfaceMessage::BusLevel(bus_idx, bus_id, LEVEL_ZERO_DB),
-            ),
-        ]
-        .align_x(Center)
-        .spacing(4)
-        .width(60)
-        .into()
-    } else {
-        Space::new().width(60).into()
-    }
-}
-
-fn build_mute_btn(fx_muted: bool) -> Element<'static, InterfaceMessage> {
+pub fn build_mute_btn(fx_muted: bool) -> Element<'static, InterfaceMessage> {
     let label = if fx_muted { "FX MUTED" } else { "FX MUTE" };
-    let btn = button(text(label).size(12).center())
+    let btn = button(text(label).size(10).center())
         .on_press(InterfaceMessage::FxMute)
-        .padding([8, 20])
-        .width(180);
+        .padding([5, 4])
+        .width(Fill);
     if fx_muted {
         btn.style(move |theme, status| {
             let mut style = button::danger(theme, status);
@@ -188,55 +64,78 @@ fn build_mute_btn(fx_muted: bool) -> Element<'static, InterfaceMessage> {
     }
 }
 
-fn build_preset_grid(fx: &FxSlot) -> Element<'_, InterfaceMessage> {
+// 2×8 grid: 4-wide doesn't fit inside a mixer bus strip
+pub fn build_preset_grid(fx: &FxSlot) -> Element<'_, InterfaceMessage> {
     let fx_id = fx.id;
     let current = fx.preset as usize;
     let presets = fx.presets();
 
     let mut rows: Vec<Element<InterfaceMessage>> = Vec::new();
 
-    for row_idx in 0..4 {
+    for row_idx in 0..8 {
         let mut buttons: Vec<Element<InterfaceMessage>> = Vec::new();
-        for col in 0..4 {
-            let idx = row_idx * 4 + col;
+        for col in 0..2 {
+            let idx = row_idx * 2 + col;
             let preset = &presets[idx];
             let is_selected = idx == current;
 
-            let label = column![text(preset.name).size(11)].align_x(Center);
+            let label = column![text(preset.name).size(9)].align_x(Center);
 
             let btn = if is_selected {
                 button(label)
-                    .padding([8, 4])
+                    .padding([4, 2])
                     .width(Fill)
                     .style(button::primary)
             } else {
                 button(label)
                     .on_press(InterfaceMessage::FxPreset(fx_id, idx as u8))
-                    .padding([8, 4])
+                    .padding([4, 2])
                     .width(Fill)
                     .style(button::secondary)
             };
 
             buttons.push(btn.into());
         }
-        rows.push(Row::with_children(buttons).spacing(4).width(Fill).into());
+        rows.push(Row::with_children(buttons).spacing(3).width(Fill).into());
     }
 
-    let mut grid = Column::new().spacing(5).width(Fill);
+    let mut grid = Column::new().spacing(3).width(Fill);
     for r in rows {
         grid = grid.push(r);
     }
 
     column![
-        sync_label("Preset", 12.0, fx.preset_synced),
-        Space::new().height(4),
+        sync_label("Preset", 10.0, fx.preset_synced),
+        Space::new().height(2),
         grid,
     ]
     .width(Fill)
     .into()
 }
 
-fn build_param2_toggle<'a>(
+pub fn build_param1_slider(fx: &FxSlot) -> Element<'_, InterfaceMessage> {
+    let fx_id = fx.id;
+    let info = fx.preset_info();
+    column![
+        sync_label(info.param1_label, 10.0, fx.param1_synced),
+        tooltip(
+            slider(0..=100, fx.param1, move |v| InterfaceMessage::FxParam1(fx_id, v))
+                .width(Fill)
+                // model updates per drag frame; send the settled value once on release
+                .on_release(InterfaceMessage::FxParam1Send(fx_id)),
+            container(text(format!("{}%", fx.param1)).size(9))
+                .padding(4)
+                .style(container::rounded_box),
+            tooltip::Position::Top,
+        )
+        .gap(2),
+    ]
+    .width(Fill)
+    .spacing(2)
+    .into()
+}
+
+pub fn build_param2_toggle<'a>(
     fx_id: u8,
     off_label: &'a str,
     on_label: &'a str,
@@ -244,8 +143,8 @@ fn build_param2_toggle<'a>(
     is_synced: bool,
 ) -> Element<'a, InterfaceMessage> {
     let off_btn = if !is_on {
-        button(text(off_label).size(12).center())
-            .padding([8, 12])
+        button(text(off_label).size(9).center())
+            .padding([5, 2])
             .width(Fill)
             .style(move |theme, status| {
                 let mut style = button::primary(theme, status);
@@ -253,16 +152,16 @@ fn build_param2_toggle<'a>(
                 style
             })
     } else {
-        button(text(off_label).size(12).center())
+        button(text(off_label).size(9).center())
             .on_press(InterfaceMessage::FxParam2(fx_id, 0))
-            .padding([8, 12])
+            .padding([5, 2])
             .width(Fill)
             .style(button::secondary)
     };
 
     let on_btn = if is_on {
-        button(text(on_label).size(12).center())
-            .padding([8, 12])
+        button(text(on_label).size(9).center())
+            .padding([5, 2])
             .width(Fill)
             .style(move |theme, status| {
                 let mut style = button::primary(theme, status);
@@ -270,9 +169,9 @@ fn build_param2_toggle<'a>(
                 style
             })
     } else {
-        button(text(on_label).size(12).center())
+        button(text(on_label).size(9).center())
             .on_press(InterfaceMessage::FxParam2(fx_id, 100))
-            .padding([8, 12])
+            .padding([5, 2])
             .width(Fill)
             .style(button::secondary)
     };
@@ -280,25 +179,25 @@ fn build_param2_toggle<'a>(
     let sync_dot = if is_synced {
         text("")
     } else {
-        text("\u{25CF} ").size(10).color(UNSYNCED_COLOR)
+        text("\u{25CF} ").size(9).color(UNSYNCED_COLOR)
     };
 
     row![sync_dot, off_btn, on_btn]
-        .spacing(4)
+        .spacing(3)
         .align_y(Center)
         .width(Fill)
         .into()
 }
 
-fn build_tap_tempo_btn(bpm: Option<u16>) -> Element<'static, InterfaceMessage> {
+pub fn build_tap_tempo_btn(bpm: Option<u16>) -> Element<'static, InterfaceMessage> {
     let label = match bpm {
-        Some(b) => format!("TAP TEMPO · {} BPM", b),
-        None => "TAP TEMPO".to_string(),
+        Some(b) => format!("TAP {} BPM", b),
+        None => "TAP".to_string(),
     };
-    let tap_btn = button(text(label).size(12).center())
+    let tap_btn = button(text(label).size(10).center())
         .on_press(InterfaceMessage::TapTempo)
-        .padding([8, 20])
-        .width(180)
+        .padding([5, 4])
+        .width(Fill)
         .style(button::secondary);
 
     tooltip(

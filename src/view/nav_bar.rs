@@ -5,11 +5,10 @@ use iced::{
     Center, Element, Fill,
 };
 
-// Eq and Sends pages are obsolete: the mixer view covers both (4-band EQ
-// per input strip, 9-band EQ per bus, fx send knobs, FX return faders).
-// Fx stays: it hosts the FX→Main routing checkboxes (the FX master switch)
-// and the preset selector — no mixer equivalent.
-const NAV_PAGES: [Page; 2] = [Page::Mixer, Page::Fx];
+// Only the mixer: EQ, Sends and FX pages are gone — the mixer strips cover
+// EQ (4-band per input, 9-band per bus), fx sends, FX returns, and the FX
+// controls (presets/params/routing/mute/tap) now live in the FX strips.
+const NAV_PAGES: [Page; 1] = [Page::Mixer];
 
 const SYNCED_COLOR: iced::Color = iced::Color {
     r: 0.2,

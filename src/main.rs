@@ -7,8 +7,7 @@ mod view;
 
 use view::{
     device_select_page::view_device_select, eq_page::view_eq,
-    fx_page::view_fx, mixer_page::view_mixer,
-    nav_bar::view_nav_bar, sends_page::view_sends, settings_page::view_settings,
+    mixer_page::view_mixer, nav_bar::view_nav_bar, sends_page::view_sends, settings_page::view_settings,
 };
 use image::load_from_memory;
 use service::ble;
@@ -53,7 +52,7 @@ fn clipboard_cmd() -> &'static str {
 }
 
 const APPLICATION_NAME: &str = "FLOW 8 Controller";
-const PREFERRED_WIDTH: f32 = 1200.0;
+const PREFERRED_WIDTH: f32 = 1500.0;
 const PREFERRED_HEIGHT: f32 = 700.0;
 const MIN_WIDTH: f32 = 800.0;
 const MIN_HEIGHT: f32 = 500.0;
@@ -382,7 +381,6 @@ fn view(controller: &FLOW8Controller) -> Element<'_, InterfaceMessage> {
         Page::Mixer => view_mixer(controller),
         Page::Eq => view_eq(controller),
         Page::Sends => view_sends(controller),
-        Page::Fx => view_fx(controller),
         Page::Settings => view_settings(controller),
         Page::DeviceSelect => unreachable!(),
     };
