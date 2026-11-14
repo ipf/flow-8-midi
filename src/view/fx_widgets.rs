@@ -19,14 +19,13 @@ const MUTE_COLOR: iced::Color = iced::Color {
     a: 1.0,
 };
 
-/// "M" mute button, channel-strip style (danger when muted). FX mute is
-/// global (both FX processors), so both FX strips show the same state.
-/// Same geometry as TAP so the top row's buttons are even-sized.
+/// "M" mute button, same geometry as the channel strips' M buttons
+/// (secondary, danger-tinted when muted). FX mute is global (both FX
+/// processors). Lives in FX1's M/S band.
 pub fn build_mute_btn(fx_muted: bool) -> Element<'static, InterfaceMessage> {
-    let btn = button(text("M").size(10).center())
+    let btn = button(text("M").size(12))
         .on_press(InterfaceMessage::FxMute)
-        .padding([4, 0])
-        .width(Fill);
+        .padding([4, 10]);
     if fx_muted {
         btn.style(move |theme, status| {
             let mut style = button::danger(theme, status);
@@ -44,10 +43,10 @@ pub fn build_tap_tempo_btn(bpm: Option<u16>) -> Element<'static, InterfaceMessag
         Some(b) => format!("TAP {}", b),
         None => "TAP".to_string(),
     };
-    let tap_btn = button(text(label).size(10).center())
+    // same snug geometry as the 48V button — it lives in that slot
+    let tap_btn = button(text(label).size(11).center())
         .on_press(InterfaceMessage::TapTempo)
-        .padding([4, 0])
-        .width(Fill)
+        .padding([3, 10])
         .style(button::secondary);
 
     tooltip(

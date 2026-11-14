@@ -510,20 +510,22 @@ fn build_bus_strip<'a>(
     );
     col = col.push(Space::new().height(Length::Fixed(NAME_SLOT_HEIGHT)));
     if bus.bus_type == BusType::Fx && bus.index == 3 {
-        // FX1 hosts the global M + TAP in the channels' M/S band
+        // FX1: M in the channels' M/S band (same button look), TAP in
+        // the 48V slot below — same slots, so strips stay aligned
         col = col.push(
-            container(row![
-                build_mute_btn(controller.fx_muted),
-                build_tap_tempo_btn(controller.current_tap_bpm()),
-            ])
-            .width(Fill)
-            .height(Length::Fixed(MUTE_SLOT_HEIGHT))
-            .align_y(Center),
+            container(build_mute_btn(controller.fx_muted))
+                .height(Length::Fixed(MUTE_SLOT_HEIGHT))
+                .align_y(Center),
+        );
+        col = col.push(
+            container(build_tap_tempo_btn(controller.current_tap_bpm()))
+                .height(Length::Fixed(PHANTOM_SLOT_HEIGHT))
+                .align_y(Center),
         );
     } else {
         col = col.push(Space::new().height(Length::Fixed(MUTE_SLOT_HEIGHT)));
+        col = col.push(Space::new().height(Length::Fixed(PHANTOM_SLOT_HEIGHT)));
     }
-    col = col.push(Space::new().height(Length::Fixed(PHANTOM_SLOT_HEIGHT)));
 
     // 9-band EQ knobs (2 per row), same data as the EQ page. FX buses
     // have no 9-band EQ — their strip hosts the FX controls instead
