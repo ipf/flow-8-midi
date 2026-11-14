@@ -876,9 +876,11 @@ const METER_UPDATE_TYPE: u8 = 0x22;
 // — proven on-air by the 0x39 auth (cksum 0x2A) and [37][01][38].
 const METER_INPUT_IDS: [u8; 7] = [0x40, 0x41, 0x42, 0x43, 0xC4, 0xC5, 0xC6];
 /// metered outputs: output channel id | 0x40 | 0x80 (stereo) —
-/// Main 0x0F→0xCF, Mon 1 0x18→0xD8, Mon 2 0x19→0xD9 (raw bus ids 7/8/9 are
-/// the wrong id space)
-const METER_OUTPUT_BYTES: [u8; 3] = [0xCF, 0xD8, 0xD9];
+/// Main 0x0F→0xCF, Mon 1 0x0A→0xCA, Mon 2 0x0B→0xCB (meter-proven:
+/// 0xD8/0xD9 are dead ids — always −144; 0xCA shows Mon 1 live with the
+/// tone; Mon outputs are mono — float 11 stays −144, the consumer takes
+/// max(L, R))
+const METER_OUTPUT_BYTES: [u8; 3] = [0xCF, 0xCA, 0xCB];
 
 // Fader/meter dB curve: fix8 selector 3 lookup (F48 from the official
 // app's tables — a meter level byte OR a fader position byte b means

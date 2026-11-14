@@ -83,7 +83,7 @@ Oracle: `../FLow8` (Kotlin rebuild of the official app). Native dumps in
 - **channelId space** (device): Main=0x0F, Mon1/2=0x0A/0x0B,
   FX1/2=0x0C/0x0D. Our bus ids 10/11 → `0x0A + (bus_id − 8)`.
 - **Metering**: MeterRequest output byte = `channelId | 0x40 | 0x80`
-  (Main=0xCF, Mon=0xD8/0xD9, FX1=0xCC). Meter update frames are 20 B:
+  (Main=0xCF, Mon1=0xCA, Mon2=0xCB, FX1=0xCC — 0xD8/0xD9 are dead ids, meter-proven). Meter update frames are 20 B:
   `[0x16][?][15 × fix8 dB][GR…]`. Meter loop polls one output at a time,
   advances only on frame land (poll↔frame 1:1), `FLOW8_METER_OUT` env
   pins one output for debugging.
