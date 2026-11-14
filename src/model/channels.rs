@@ -520,6 +520,9 @@ pub struct FxSlot {
     pub preset_synced: bool,
     pub param1_synced: bool,
     pub param2_synced: bool,
+    /// routing re-asserts with every FXSetup send — unsynced only until
+    /// the first param/routing touch after a dump reload
+    pub route_synced: bool,
     /// FX output routing (cmd 0x11); the dump does not report it back
     pub route_main: bool,
     pub route_mon1: bool,
@@ -537,6 +540,7 @@ impl FxSlot {
             preset_synced: false,
             param1_synced: false,
             param2_synced: false,
+            route_synced: false,
             route_main: true,
             route_mon1: false,
             route_mon2: false,
@@ -561,15 +565,17 @@ impl FxSlot {
         self.preset_synced = true;
         self.param1_synced = true;
         self.param2_synced = true;
+        self.route_synced = true;
     }
 
     pub fn mark_all_unsynced(&mut self) {
         self.preset_synced = false;
         self.param1_synced = false;
         self.param2_synced = false;
+        self.route_synced = false;
     }
 
     pub fn is_all_synced(&self) -> bool {
-        self.preset_synced && self.param1_synced && self.param2_synced
+        self.preset_synced && self.param1_synced && self.param2_synced && self.route_synced
     }
 }

@@ -646,6 +646,7 @@ fn update_interface(controller: &mut FLOW8Controller, message: InterfaceMessage)
             let f = &mut controller.fx_slots[fx_id as usize];
             f.param1 = value;
             f.param1_synced = true;
+            f.route_synced = true; // FXSetup re-asserts routing
             // knob on_change fires per drag frame — same as every other
             // knob (USB CC path); the BLE write serializes on the lock
             send_fx_setup(controller, fx_id);
@@ -654,6 +655,7 @@ fn update_interface(controller: &mut FLOW8Controller, message: InterfaceMessage)
             let f = &mut controller.fx_slots[fx_id as usize];
             f.param2 = value;
             f.param2_synced = true;
+            f.route_synced = true; // FXSetup re-asserts routing
             send_fx_setup(controller, fx_id);
         }
         InterfaceMessage::FxRouting(fx_idx, to_main, to_mon1, to_mon2) => {
@@ -661,6 +663,7 @@ fn update_interface(controller: &mut FLOW8Controller, message: InterfaceMessage)
                 f.route_main = to_main;
                 f.route_mon1 = to_mon1;
                 f.route_mon2 = to_mon2;
+                f.route_synced = true;
             }
             send_fx_setup(controller, fx_idx);
         }
@@ -863,7 +866,8 @@ fn update_interface(controller: &mut FLOW8Controller, message: InterfaceMessage)
                                 ch.gr = gr.get(i as usize).copied().unwrap_or(0);
                             }
                             // floats 10/11 = L/R of the rotated metered output
-                            // (rotation 0/1/2 → bus id 7/8/9 = Main/Mon 1/Mon 2)
+                            // (rotation 0..4 → bus id 7+rot =
+                            // Main/Mon 1/Mon 2/FX 1/FX 2)
                             if let (Some(l), Some(r)) = (values.get(10), values.get(11)) {
                                 let db = l.max(*r);
                                 let bus_id = 7 + out_rot as u8;

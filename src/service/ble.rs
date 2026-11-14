@@ -879,8 +879,8 @@ const METER_INPUT_IDS: [u8; 7] = [0x40, 0x41, 0x42, 0x43, 0xC4, 0xC5, 0xC6];
 /// Main 0x0F→0xCF, Mon 1 0x0A→0xCA, Mon 2 0x0B→0xCB (meter-proven:
 /// 0xD8/0xD9 are dead ids — always −144; 0xCA shows Mon 1 live with the
 /// tone; Mon outputs are mono — float 11 stays −144, the consumer takes
-/// max(L, R))
-const METER_OUTPUT_BYTES: [u8; 3] = [0xCF, 0xCA, 0xCB];
+/// max(L, R)); FX1 0x0C→0xCC, FX2 0x0D→0xCD meter the FX engine output
+const METER_OUTPUT_BYTES: [u8; 5] = [0xCF, 0xCA, 0xCB, 0xCC, 0xCD];
 
 // Fader/meter dB curve: fix8 selector 3 lookup (F48 from the official
 // app's tables — a meter level byte OR a fader position byte b means
@@ -1005,10 +1005,11 @@ async fn meter_loop(
     let mut frames_logged = 0u32;
     let mut frames_seen = 0u32;
     log!("[BLE] Meter loop running (main session stream)");
-    // rotating output select: poll 1 meters Main (0xCF), then Mon1 (0xD8)
-    // and Mon2 (0xD9) — slots 10/11 always carry the SELECTED output's L/R
-    // (disasm 0xb1564: the output id overwrites payload index 7), and
-    // out_rot 0/1/2 maps to buses Main/Mon1/Mon2 in the UI consumer
+    // rotating output select: poll 1 meters Main (0xCF), Mon 1/2 (0xCA/
+    // 0xCB) and FX 1/2 (0xCC/0xCD) — slots 10/11 always carry the
+    // SELECTED output's L/R (disasm 0xb1564: the output id overwrites
+    // payload index 7), and out_rot maps to buses 7+out_rot =
+    // Main/Mon1/Mon2/FX1/FX2 in the UI consumer
     // FLOW8_METER_OUT (hex) pins the poll to one output id — e.g. CC meters
     // the FX1 bus directly (0x0C|0x40|0x80) to test the FX chain internally
     let pinned_out = std::env::var("FLOW8_METER_OUT").ok().and_then(|s| {

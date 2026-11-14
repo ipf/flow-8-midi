@@ -3,7 +3,7 @@ use crate::model::{
     flow8::{FLOW8Controller, RenameTarget},
     message::InterfaceMessage,
 };
-use crate::view::fx_page::{
+use crate::view::fx_widgets::{
     build_mute_btn, build_param1_knob, build_param2_pick, build_preset_pick,
     build_route_checkbox, build_tap_tempo_btn,
 };
@@ -198,7 +198,7 @@ fn build_channel_strip<'a>(
         };
         col = col.push(
             container(
-                button(text(name_label).size(11))
+                button(text(name_label).size(13))
                     .on_press(InterfaceMessage::RenameStartChannel(channel.id))
                     .padding([1, 4])
                     .style(button::text),
@@ -485,7 +485,7 @@ fn build_bus_strip<'a>(
     let bus_idx = bus.index;
     let bus_id = bus.id;
 
-    col = col.push(text(bus.label()).size(14));
+    col = col.push(text(bus.label()).size(13));
 
     // 9-band EQ knobs (3×3 grid), same data as the EQ page. FX buses have
     // no 9-band EQ — their strip hosts the FX controls instead (M mute,
@@ -495,13 +495,15 @@ fn build_bus_strip<'a>(
         let fx_idx = (bus.index - 3) as usize; // buses: 0=Main 1=Mon1 2=Mon2 3=FX1 4=FX2
         if let Some(f) = controller.fx_slots.get(fx_idx) {
             let info = f.preset_info();
-            // top row like the channel strips: M (global FX mute); FX1's
-            // strip also hosts the tap tempo button
-            let mut top_row = row![build_mute_btn(controller.fx_muted)].spacing(3);
+            // M (global FX mute) lives in FX1 only, next to TAP; FX2's
+            // strip starts with the preset dropdown
             if fx_idx == 0 {
-                top_row = top_row.push(build_tap_tempo_btn(controller.current_tap_bpm()));
+                col = col.push(row![
+                    build_mute_btn(controller.fx_muted),
+                    build_tap_tempo_btn(controller.current_tap_bpm()),
+                ]
+                .spacing(3));
             }
-            col = col.push(top_row);
             col = col.push(build_preset_pick(f));
             col = col.push(build_param1_knob(f));
             col = col.push(build_param2_pick(
@@ -513,11 +515,13 @@ fn build_bus_strip<'a>(
             ));
             col = col.push(
                 // routing stacked vertically: reads cleaner than a
-                // horizontal row in a narrow strip
+                // horizontal row in a narrow strip; the unsynced dot
+                // shows until an FXSetup (any param/routing touch) put
+                // the routing on the device
                 column![
-                    build_route_checkbox(f, 0, "Main"),
-                    build_route_checkbox(f, 1, "Mon1"),
-                    build_route_checkbox(f, 2, "Mon2"),
+                    row![sync_dot(f.route_synced), build_route_checkbox(f, 0, "Main")],
+                    row![sync_dot(f.route_synced), build_route_checkbox(f, 1, "Mon1")],
+                    row![sync_dot(f.route_synced), build_route_checkbox(f, 2, "Mon2")],
                 ]
                 .spacing(2),
             );

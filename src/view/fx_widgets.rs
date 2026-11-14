@@ -61,14 +61,15 @@ pub fn build_tap_tempo_btn(bpm: Option<u16>) -> Element<'static, InterfaceMessag
     .into()
 }
 
-/// pick_list item: carries the preset index, displays the preset name.
+/// pick_list item: carries the value (preset index, or param2 0/100),
+/// displays the name.
 #[derive(Clone, PartialEq)]
-pub struct PresetChoice {
-    idx: u8,
+pub struct Choice {
+    value: u8,
     name: &'static str,
 }
 
-impl std::fmt::Display for PresetChoice {
+impl std::fmt::Display for Choice {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.name)
     }
@@ -76,12 +77,12 @@ impl std::fmt::Display for PresetChoice {
 
 pub fn build_preset_pick(fx: &FxSlot) -> Element<'_, InterfaceMessage> {
     let fx_id = fx.id;
-    let choices: Vec<PresetChoice> = fx
+    let choices: Vec<Choice> = fx
         .presets()
         .iter()
         .enumerate()
-        .map(|(i, p)| PresetChoice {
-            idx: i as u8,
+        .map(|(i, p)| Choice {
+            value: i as u8,
             name: p.name,
         })
         .collect();
@@ -89,7 +90,7 @@ pub fn build_preset_pick(fx: &FxSlot) -> Element<'_, InterfaceMessage> {
 
     column![
         sync_label("Preset", 10.0, fx.preset_synced),
-        pick_list(choices, selected, move |c| InterfaceMessage::FxPreset(fx_id, c.idx))
+        pick_list(choices, selected, move |c| InterfaceMessage::FxPreset(fx_id, c.value))
             .text_size(9)
             .padding([2, 4])
             .width(Fill),
@@ -126,23 +127,12 @@ pub fn build_param2_pick(
     _is_synced: bool,
 ) -> Element<'static, InterfaceMessage> {
     // dropdown like the preset select: exactly one of the two options
-    #[derive(Clone, PartialEq)]
-    struct ParamChoice {
-        value: u8,
-        name: &'static str,
-    }
-    impl std::fmt::Display for ParamChoice {
-        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            write!(f, "{}", self.name)
-        }
-    }
-
     let choices = vec![
-        ParamChoice {
+        Choice {
             value: 0,
             name: off_label,
         },
-        ParamChoice {
+        Choice {
             value: 100,
             name: on_label,
         },
