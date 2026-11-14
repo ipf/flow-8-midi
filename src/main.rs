@@ -858,7 +858,20 @@ fn update_interface(controller: &mut FLOW8Controller, message: InterfaceMessage)
                                     _ => values.get(8).zip(values.get(9)).map(|(l, r)| l.max(*r)),
                                 };
                                 if let Some(db) = db {
-                                    let linear = crate::service::ble::meter_db_to_linear(db);
+                                    // the frame meters the channel input
+                                    // pre-fader — apply the channel fader
+                                    // (and mute) so the meter shows the
+                                    // level after the levelling
+                                    let fader_db = if ch.is_muted {
+                                        -144.0
+                                    } else {
+                                        crate::service::ble::level_cc_to_db(
+                                            ch.channel_strip.level,
+                                        )
+                                    };
+                                    let linear = crate::service::ble::meter_db_to_linear(
+                                        (db + fader_db).max(-144.0),
+                                    );
                                     ch.meter_target = linear;
                                 }
                                 // GR: our channel i == the device's input

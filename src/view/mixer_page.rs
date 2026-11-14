@@ -87,19 +87,23 @@ fn meter_bar(value: f32, gr: u8) -> Element<'static, InterfaceMessage> {
     col.width(Length::Fixed(METER_WIDTH)).into()
 }
 
-/// clip light: red dot above the fader, latched for 2 s after hitting 0 dBFS
+/// clip light: red dot above the fader, latched for 2 s after hitting 0 dBFS.
+/// Fixed-height slot — both states occupy the same space so the fader block
+/// never shifts the layout.
 fn clip_dot(clip_time: Option<Instant>) -> Element<'static, InterfaceMessage> {
     let active = clip_time
         .map(|t| t.elapsed().as_millis() < 2000)
         .unwrap_or(false);
-    if active {
+    container(if active {
         text("\u{25CF}")
             .size(10)
             .color(Color::from_rgb(0.95, 0.15, 0.15))
-            .into()
     } else {
-        Space::new().height(Length::Fixed(12.0)).into()
-    }
+        text("").size(10)
+    })
+    .height(Length::Fixed(12.0))
+    .align_y(Center)
+    .into()
 }
 
 pub fn view_mixer(controller: &FLOW8Controller) -> Element<'_, InterfaceMessage> {
