@@ -420,10 +420,26 @@ async fn read_device_settings(
     log!("[BLE] Reading device settings (0x26)...");
     let mut found: Vec<(u8, u8)> = Vec::new();
     for &id in &SETTING_READ_IDS {
-        let packet = [0x26u8, id];
+        // official GetSetting (XAIRClient.queueGetSettingCommandPackets):
+        // full cmd struct, setting id at data +0 — the data area is the
+        // cmd's 35-byte field (chunk_size = 38-3), zero-padded. Response
+        // arrives as a 0x25-typed cmd: id le32 at +24, len at +28, value
+        // at +29 (onSettingsCommandReceived).
+        let mut data = vec![id];
+        data.resize(35, 0);
+        let packet = [
+            (data.len() as u8),
+            0x00,
+            0x26,
+            0x00,
+            0x01,
+            0x00,
+        ];
+        let mut write_buf = packet.to_vec();
+        write_buf.extend_from_slice(&data);
         let write = peripheral.write(
             characteristic,
-            &packet,
+            &write_buf,
             WriteType::WithoutResponse,
         );
         // cap the ack wait; without-response writes never complete on BlueZ
@@ -433,8 +449,17 @@ async fn read_device_settings(
             tokio::time::timeout(Duration::from_millis(120), stream.next()).await
         {
             let v = &n.value;
-            log_debug!("[BLE] Settings readback: {:02X?}", &v[..v.len().min(12)]);
-            if v.len() >= 3 && v[0] == 0x26 {
+            log_debug!("[BLE] Settings readback: {:02X?}", &v[..v.len().min(32)]);
+            if v.len() >= 30 && v[0] == 0x25 {
+                // 0x25-typed response cmd: [type][..24 hdr..][id le32][len][value]
+                let sid = v[24];
+                if SETTING_READ_IDS.contains(&sid) {
+                    found.push((sid, v[29]));
+                }
+            } else if v.len() >= 4 && v[0] == 0x26 && v[1] == 0x01 {
+                // framed response: [0x26][01][id][value...]
+                found.push((v[2], v[3]));
+            } else if v.len() >= 3 && v[0] == 0x26 {
                 found.push((v[1], v[2]));
             } else if v.len() == 2 && SETTING_READ_IDS.contains(&v[0]) {
                 found.push((v[0], v[1]));

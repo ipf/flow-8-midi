@@ -1,5 +1,5 @@
 use super::channels::{BusId, BusIdx, ChannelId, FxSlotId};
-use super::flow8::SyncInterval;
+use super::flow8::{SyncInterval};
 use super::page::Page;
 use iced::Theme;
 
@@ -64,7 +64,6 @@ pub enum InterfaceMessage {
     CopyHexDump,
     Tick,
     BleConnect,
-    BleRequestDump,
     #[cfg(any(debug_assertions, feature = "dev-tools"))]
     CalibrateStart,
     #[cfg(any(debug_assertions, feature = "dev-tools"))]

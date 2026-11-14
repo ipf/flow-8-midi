@@ -1,3 +1,4 @@
+pub mod about_page;
 pub mod device_select_page;
 pub mod fx_widgets;
 pub mod mixer_page;

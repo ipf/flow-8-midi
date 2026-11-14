@@ -162,15 +162,6 @@ impl Channel {
         matches!(self.phantom_pwr.phantom_power_type, PhantomPowerType::Set48v)
     }
 
-    pub fn is_all_synced(&self) -> bool {
-        self.name_synced
-            && self.mute_synced
-            && self.solo_synced
-            && (!self.has_phantom() || self.phantom_synced)
-            && self.channel_strip.is_all_synced(self)
-            && self.four_band_eq.is_all_synced()
-            && self.sends.is_all_synced()
-    }
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -235,12 +226,6 @@ impl Bus {
         self.nine_band_eq.mark_all_unsynced();
     }
 
-    pub fn is_all_synced(&self) -> bool {
-        self.bus_strip.level_synced
-            && (!self.has_balance() || self.bus_strip.balance_synced)
-            && (!self.has_limiter() || self.bus_strip.limiter_synced)
-            && (!self.has_nine_band_eq() || self.nine_band_eq.is_all_synced())
-    }
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -291,13 +276,6 @@ impl BasicChannelStrip {
         self.compressor_synced = false;
     }
 
-    pub fn is_all_synced(&self, channel: &Channel) -> bool {
-        self.level_synced
-            && self.balance_synced
-            && (!channel.has_gain() || self.gain_synced)
-            && (!channel.has_compressor() || self.compressor_synced)
-            && (!channel.has_low_cut() || self.low_cut_synced)
-    }
 }
 
 #[derive(Copy, Clone, Debug, Default)]
@@ -327,9 +305,6 @@ impl ChannelSends {
         self.fx2_synced = false;
     }
 
-    pub fn is_all_synced(&self) -> bool {
-        self.mon1_synced && self.mon2_synced && self.fx1_synced && self.fx2_synced
-    }
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -368,9 +343,6 @@ impl BusStrip {
         self.limiter_synced = false;
     }
 
-    pub fn is_all_synced(&self) -> bool {
-        self.level_synced && self.balance_synced && self.limiter_synced
-    }
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -415,9 +387,6 @@ impl FourBandEQ {
         self.hi_synced = false;
     }
 
-    pub fn is_all_synced(&self) -> bool {
-        self.low_synced && self.low_mid_synced && self.hi_mid_synced && self.hi_synced
-    }
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -460,9 +429,6 @@ impl NineBandEQ {
         self.bands_synced = [false; 9];
     }
 
-    pub fn is_all_synced(&self) -> bool {
-        self.bands_synced.iter().all(|&s| s)
-    }
 }
 
 pub struct FxPresetInfo {
@@ -575,7 +541,4 @@ impl FxSlot {
         self.route_synced = false;
     }
 
-    pub fn is_all_synced(&self) -> bool {
-        self.preset_synced && self.param1_synced && self.param2_synced && self.route_synced
-    }
 }

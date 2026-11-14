@@ -109,7 +109,6 @@ pub struct FLOW8Controller {
     pub ble_connection: Arc<Mutex<Option<BleConnection>>>,
     pub tick_counter: u32,
     pub ble_last_click: Option<Instant>,
-    pub sync_last_click: Option<Instant>,
     pub sync_interval: SyncInterval,
     pub last_sync_time: Option<Instant>,
     pub snapshot_names: Vec<Option<String>>,
@@ -176,12 +175,6 @@ impl FLOW8Controller {
         }
     }
 
-    pub fn is_globally_synced(&self) -> bool {
-        self.channels.iter().all(|c| c.is_all_synced())
-            && self.buses.iter().all(|b| b.is_all_synced())
-            && self.fx_slots.iter().all(|f| f.is_all_synced())
-    }
-
     pub fn new() -> FLOW8Controller {
         FLOW8Controller {
             current_page: Page::DeviceSelect,
@@ -234,7 +227,6 @@ impl FLOW8Controller {
             ble_connection: Arc::new(Mutex::new(None)),
             tick_counter: 0,
             ble_last_click: None,
-            sync_last_click: None,
             sync_interval: SyncInterval::Min2,
             last_sync_time: None,
             snapshot_names: vec![None; SNAPSHOT_COUNT],

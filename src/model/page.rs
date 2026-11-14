@@ -5,6 +5,7 @@ pub enum Page {
     DeviceSelect,
     Mixer,
     Settings,
+    About,
 }
 
 impl fmt::Display for Page {
@@ -13,6 +14,7 @@ impl fmt::Display for Page {
             Page::DeviceSelect => "Device",
             Page::Mixer => "Mixer",
             Page::Settings => "Settings",
+            Page::About => "About",
         };
         write!(f, "{}", text)
     }

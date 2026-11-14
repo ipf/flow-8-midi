@@ -380,6 +380,7 @@ fn view(controller: &FLOW8Controller) -> Element<'_, InterfaceMessage> {
     let page_content = match controller.current_page {
         Page::Mixer => view_mixer(controller),
         Page::Settings => view_settings(controller),
+        Page::About => crate::view::about_page::view_about(controller),
         Page::DeviceSelect => unreachable!(),
     };
 
@@ -999,18 +1000,6 @@ fn update_interface(controller: &mut FLOW8Controller, message: InterfaceMessage)
                 start_ble_connection(controller);
             } else {
                 controller.ble_last_click = Some(now);
-            }
-        }
-
-        InterfaceMessage::BleRequestDump => {
-            controller.sync_last_click = Some(std::time::Instant::now());
-            match try_ble_dump_trigger(controller) {
-                Some(Ok(_)) => {
-                    controller.last_sync_time = Some(std::time::Instant::now());
-                    log!("[APP] Dump trigger sent via BLE");
-                }
-                Some(Err(e)) => log_error!("[APP] Dump trigger failed: {}", e),
-                None => log_warn!("[APP] No BLE connection for dump trigger"),
             }
         }
 

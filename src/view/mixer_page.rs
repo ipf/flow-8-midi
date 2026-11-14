@@ -510,22 +510,16 @@ fn build_bus_strip<'a>(
     );
     col = col.push(Space::new().height(Length::Fixed(NAME_SLOT_HEIGHT)));
     if bus.bus_type == BusType::Fx && bus.index == 3 {
-        // FX1: M in the channels' M/S band (same button look), TAP in
-        // the 48V slot below — same slots, so strips stay aligned
+        // FX1: M in the channels' M/S band (same button look)
         col = col.push(
             container(build_mute_btn(controller.fx_muted))
                 .height(Length::Fixed(MUTE_SLOT_HEIGHT))
                 .align_y(Center),
         );
-        col = col.push(
-            container(build_tap_tempo_btn(controller.current_tap_bpm()))
-                .height(Length::Fixed(PHANTOM_SLOT_HEIGHT))
-                .align_y(Center),
-        );
     } else {
         col = col.push(Space::new().height(Length::Fixed(MUTE_SLOT_HEIGHT)));
-        col = col.push(Space::new().height(Length::Fixed(PHANTOM_SLOT_HEIGHT)));
     }
+    col = col.push(Space::new().height(Length::Fixed(PHANTOM_SLOT_HEIGHT)));
 
     // 9-band EQ knobs (2 per row), same data as the EQ page. FX buses
     // have no 9-band EQ — their strip hosts the FX controls instead
@@ -544,6 +538,10 @@ fn build_bus_strip<'a>(
                 f.param2_is_on(),
                 f.param2_synced,
             ));
+            if fx_idx == 0 {
+                // TAP sits between the param2 dropdown and the routing
+                col = col.push(build_tap_tempo_btn(controller.current_tap_bpm()));
+            }
             col = col.push(
                 // routing stacked vertically: reads cleaner than a
                 // horizontal row in a narrow strip; the unsynced dot
