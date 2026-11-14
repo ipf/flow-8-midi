@@ -157,6 +157,11 @@ pub fn view_mixer(controller: &FLOW8Controller) -> Element<'_, InterfaceMessage>
 
 const NAME_SLOT_HEIGHT: f32 = 16.0;
 const PHANTOM_SLOT_HEIGHT: f32 = 30.0;
+/// header slot heights shared by channel AND bus strips: label line,
+/// rename-button slot, M/S row slot — keeps the knob sections starting
+/// at the same Y on every strip
+const LABEL_SLOT_HEIGHT: f32 = 18.0;
+const MUTE_SLOT_HEIGHT: f32 = 24.0;
 
 fn build_channel_strip<'a>(
     channel: &'a Channel,
@@ -188,7 +193,11 @@ fn build_channel_strip<'a>(
             .spacing(4),
         );
     } else {
-        col = col.push(text(channel.display_label()).size(13));
+        col = col.push(
+            container(text(channel.display_label()).size(13))
+                .height(Length::Fixed(LABEL_SLOT_HEIGHT))
+                .align_y(Center),
+        );
 
         // name (or ✎ when empty) doubles as the rename button
         let name_label = if channel.name.is_empty() {
@@ -296,6 +305,11 @@ fn build_channel_strip<'a>(
         .spacing(4),
     );
 
+    // bottom-anchor: faders of all strips line up; the Pan slot sits
+    // directly above the fader block so it lines up with the buses'
+    // Pan/Limiter band on every strip
+    col = col.push(Space::new().height(Fill));
+
     col = col.push(knob_slot(
         "Pan",
         strip.balance_synced,
@@ -305,9 +319,6 @@ fn build_channel_strip<'a>(
         move |v| InterfaceMessage::Balance(ch_id, v),
         format_pan(strip.balance),
     ));
-
-    // bottom-anchor: faders of all strips line up
-    col = col.push(Space::new().height(Fill));
 
     col = col.push(
         column![
@@ -460,14 +471,18 @@ fn add_mute_solo<'a>(
     };
 
     column.push(
-        row![
-            sync_dot(channel.mute_synced),
-            mute_btn,
-            sync_dot(channel.solo_synced),
-            solo_btn,
-        ]
-        .align_y(Center)
-        .spacing(2),
+        container(
+            row![
+                sync_dot(channel.mute_synced),
+                mute_btn,
+                sync_dot(channel.solo_synced),
+                solo_btn,
+            ]
+            .align_y(Center)
+            .spacing(2),
+        )
+        .height(Length::Fixed(MUTE_SLOT_HEIGHT))
+        .align_y(Center),
     )
 }
 
@@ -479,31 +494,45 @@ fn build_bus_strip<'a>(
         .width(Fill)
         .height(Fill)
         .align_x(Center)
-        .spacing(2)
-        .padding([6, 3]);
+        .spacing(4)
+        .padding([8, 3]);
 
     let bus_idx = bus.index;
     let bus_id = bus.id;
 
-    col = col.push(text(bus.label()).size(13));
+    // header slots mirror the channel strips (label / rename button /
+    // M-S row / phantom) so the knob sections start at the same Y on
+    // every strip
+    col = col.push(
+        container(text(bus.label()).size(13))
+            .height(Length::Fixed(LABEL_SLOT_HEIGHT))
+            .align_y(Center),
+    );
+    col = col.push(Space::new().height(Length::Fixed(NAME_SLOT_HEIGHT)));
+    if bus.bus_type == BusType::Fx && bus.index == 3 {
+        // FX1 hosts the global M + TAP in the channels' M/S band
+        col = col.push(
+            container(row![
+                build_mute_btn(controller.fx_muted),
+                build_tap_tempo_btn(controller.current_tap_bpm()),
+            ])
+            .width(Fill)
+            .height(Length::Fixed(MUTE_SLOT_HEIGHT))
+            .align_y(Center),
+        );
+    } else {
+        col = col.push(Space::new().height(Length::Fixed(MUTE_SLOT_HEIGHT)));
+    }
+    col = col.push(Space::new().height(Length::Fixed(PHANTOM_SLOT_HEIGHT)));
 
-    // 9-band EQ knobs (3×3 grid), same data as the EQ page. FX buses have
-    // no 9-band EQ — their strip hosts the FX controls instead (M mute,
-    // preset dropdown, param1 knob, param2 toggle, routing; the old Fx
+    // 9-band EQ knobs (2 per row), same data as the EQ page. FX buses
+    // have no 9-band EQ — their strip hosts the FX controls instead
+    // (preset dropdown, param1 knob, param2 toggle, routing; the old Fx
     // page is gone).
     if bus.bus_type == BusType::Fx {
         let fx_idx = (bus.index - 3) as usize; // buses: 0=Main 1=Mon1 2=Mon2 3=FX1 4=FX2
         if let Some(f) = controller.fx_slots.get(fx_idx) {
             let info = f.preset_info();
-            // M (global FX mute) lives in FX1 only, next to TAP; FX2's
-            // strip starts with the preset dropdown
-            if fx_idx == 0 {
-                col = col.push(row![
-                    build_mute_btn(controller.fx_muted),
-                    build_tap_tempo_btn(controller.current_tap_bpm()),
-                ]
-                .spacing(3));
-            }
             col = col.push(build_preset_pick(f));
             col = col.push(build_param1_knob(f));
             col = col.push(build_param2_pick(
@@ -527,9 +556,6 @@ fn build_bus_strip<'a>(
             );
         }
     } else if bus.has_nine_band_eq() {
-        // the EQ + pan/limiter block floats centered between the label
-        // and the fader — the two Fill spacers share the leftover space
-        col = col.push(Space::new().height(Fill));
         let eq = &bus.nine_band_eq;
         let bands: [(&str, u8, u8); 9] = [
             ("62", eq.freq_62_hz, 0),
@@ -561,12 +587,15 @@ fn build_bus_strip<'a>(
         }
     }
 
-    // Pan (Main) and Limiter (Main/Mon) each on their own row, Limiter
-    // directly above the Level. FX strips skip both: the FX controls
-    // above already fill their width/height.
+    // bottom-anchor: bus faders line up with the channel faders
+    col = col.push(Space::new().height(Fill));
+
+    // pan/limiter band, one row on every strip: Main shares Pan +
+    // Limiter, the monitors keep Limiter — same slot as the channels'
+    // Pan so all bands align across the mixer. FX strips skip it.
     if bus.bus_type != BusType::Fx {
         if bus.has_balance() {
-            col = col.push(knob_slot(
+            let mut band = row![knob_slot(
                 "Pan",
                 bus.bus_strip.balance_synced,
                 0..=127,
@@ -574,9 +603,21 @@ fn build_bus_strip<'a>(
                 64,
                 move |v| InterfaceMessage::BusBalance(bus_idx, bus_id, v),
                 format_pan(bus.bus_strip.balance),
-            ));
-        }
-        if bus.has_limiter() {
+            )]
+            .spacing(4);
+            if bus.has_limiter() {
+                band = band.push(knob_slot(
+                    "Limiter",
+                    bus.bus_strip.limiter_synced,
+                    0..=127,
+                    bus.bus_strip.limiter,
+                    127,
+                    move |v| InterfaceMessage::BusLimiter(bus_idx, bus_id, v),
+                    format_limiter(bus.bus_strip.limiter),
+                ));
+            }
+            col = col.push(band);
+        } else if bus.has_limiter() {
             col = col.push(knob_slot(
                 "Limiter",
                 bus.bus_strip.limiter_synced,
@@ -587,11 +628,7 @@ fn build_bus_strip<'a>(
                 format_limiter(bus.bus_strip.limiter),
             ));
         }
-        col = col.push(Space::new().height(Fill));
     }
-
-    // bottom-anchor: bus faders line up with the channel faders
-    col = col.push(Space::new().height(Fill));
 
     col = col.push(
         column![
