@@ -229,19 +229,20 @@ fn build_about_section() -> Element<'static, InterfaceMessage> {
     )
     .size(11);
 
-    let author = text("Author: Abel Rocha Espinosa").size(11);
+    let author = text("Author: Ingo Pfennigstorf").size(11);
+    let original = text("Original: Abel Rocha Espinosa").size(11);
     let license = text("License: GNU GPLv3").size(11);
     let repo_row = row![
         text("Repository:").size(11),
         Space::new().width(4),
-        button(text("github.com/abelroes/flow-8-midi").size(11))
+        button(text("github.com/ipf/flow-8-midi").size(11))
             .on_press(InterfaceMessage::OpenRepository)
             .padding([2, 6])
             .style(button::text),
     ]
     .align_y(Center);
 
-    let donate_btn = button(text("Buy me a beer!").size(13).center())
+    let donate_btn = button(text("Buy me a coffee!").size(13).center())
         .on_press(InterfaceMessage::OpenDonation)
         .padding([10, 24])
         .style(move |theme, status| {
@@ -271,6 +272,7 @@ fn build_about_section() -> Element<'static, InterfaceMessage> {
             description,
             Space::new().height(6),
             author,
+            original,
             license,
             repo_row,
             Space::new().height(8),

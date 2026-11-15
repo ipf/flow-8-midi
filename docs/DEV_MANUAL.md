@@ -481,4 +481,4 @@ flow-8-midi/
 
 ***
 
-> 🍺 **Enjoying FLOW 8 MIDI Controller?** This project is developed and maintained in my spare time. If you find it useful, consider [buying me a beer](https://buymeacoffee.com/abelroes) — it keeps the project alive!
+> ☕ **Enjoying FLOW 8 MIDI Controller?** This project is developed and maintained in my spare time. If you find it useful, consider [buying me a coffee](https://buymeacoffee.com/abelroes) — it keeps the project alive!

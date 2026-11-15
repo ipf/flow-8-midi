@@ -1141,7 +1141,7 @@ fn update_interface(controller: &mut FLOW8Controller, message: InterfaceMessage)
             controller.current_page = crate::model::page::Page::Manual;
         }
         InterfaceMessage::OpenRepository => {
-            open_url("https://github.com/abelroes/flow-8-midi");
+            open_url("https://github.com/ipf/flow-8-midi");
         }
         InterfaceMessage::OpenDonation => {
             open_url("https://buymeacoffee.com/abelroes");
