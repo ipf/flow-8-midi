@@ -798,6 +798,10 @@ fn update_interface(controller: &mut FLOW8Controller, message: InterfaceMessage)
 
             if let Some(ref snap_rx) = controller.snapshot_names_receiver {
                 while let Ok(names) = snap_rx.try_recv() {
+                    // a failed refresh returns empty — don't wipe known names
+                    if names.is_empty() {
+                        continue;
+                    }
                     log!("[BLE] Received {} snapshot names", names.len());
                     controller.snapshot_names = names;
                 }
@@ -1103,7 +1107,19 @@ fn update_interface(controller: &mut FLOW8Controller, message: InterfaceMessage)
                     Err(e) => log_warn!("[BLE] Rename/save failed: {}", e),
                 }
                 if matches!(target, RenameTarget::Snapshot(_) | RenameTarget::SnapshotSave(_)) {
-                    let names = ble::refresh_snapshot_names(conn);
+                    // the mixer writes the snapshot to flash after acking a
+                    // save — an immediate 0x07 refresh reads stale data
+                    if matches!(target, RenameTarget::SnapshotSave(_)) {
+                        std::thread::sleep(std::time::Duration::from_secs(2));
+                    }
+                    let mut names = ble::refresh_snapshot_names(conn);
+                    if let RenameTarget::SnapshotSave(slot) = target {
+                        if names.get(slot) != Some(&Some(name.clone())) {
+                            log!("[BLE] Snapshot names stale after save — retrying");
+                            std::thread::sleep(std::time::Duration::from_millis(2500));
+                            names = ble::refresh_snapshot_names(conn);
+                        }
+                    }
                     let _ = snap_tx.send(names);
                 }
             });
