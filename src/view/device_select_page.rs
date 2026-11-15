@@ -5,7 +5,7 @@ use iced::{
 };
 
 pub fn view_device_select(controller: &FLOW8Controller) -> Element<'_, InterfaceMessage> {
-    let title = text("FLOW 8 MIDI Controller").size(28);
+    let title = text("FLOW 8 Controller").size(28);
 
     let error_msg = controller
         .connection_error

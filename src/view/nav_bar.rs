@@ -5,16 +5,10 @@ use iced::{
     Center, Element, Fill,
 };
 
-const NAV_PAGES: [Page; 5] = [Page::Mixer, Page::Eq, Page::Sends, Page::Fx, Page::Snapshots];
-
-const SYNCED_COLOR: iced::Color = iced::Color {
-    r: 0.2,
-    g: 0.8,
-    b: 0.4,
-    a: 1.0,
-};
-
-use super::widgets::UNSYNCED_COLOR;
+// Only the mixer: EQ, Sends and FX pages are gone — the mixer strips cover
+// EQ (4-band per input, 9-band per bus), fx sends, FX returns, and the FX
+// controls (presets/params/routing/mute/tap) now live in the FX strips.
+const NAV_PAGES: [Page; 1] = [Page::Mixer];
 
 pub fn view_nav_bar(controller: &FLOW8Controller) -> Element<'_, InterfaceMessage> {
     let mut tabs = row![].spacing(4).align_y(Center);
@@ -33,77 +27,6 @@ pub fn view_nav_bar(controller: &FLOW8Controller) -> Element<'_, InterfaceMessag
     }
 
     tabs = tabs.push(Space::new().width(Fill));
-
-    let last_sync_label = format_last_sync(controller.last_sync_time);
-    tabs = tabs.push(
-        container(text(last_sync_label).size(9))
-            .padding([4, 6]),
-    );
-    tabs = tabs.push(Space::new().width(4));
-
-    let is_synced = controller.is_globally_synced();
-    let (sync_color, sync_text) = if is_synced {
-        (SYNCED_COLOR, "Synced")
-    } else {
-        (UNSYNCED_COLOR, "Unsynced")
-    };
-
-    let sync_badge = container(
-        row![
-            text("\u{25CF}").size(10).color(sync_color),
-            text(sync_text).size(10),
-        ]
-        .spacing(4)
-        .align_y(Center),
-    )
-    .padding([4, 10])
-    .style(container::rounded_box);
-
-    let sync_tip = if is_synced {
-        "All parameters are in sync with the mixer"
-    } else {
-        "Yellow dot means parameters are unsynced with the mixer"
-    };
-
-    tabs = tabs.push(
-        tooltip(
-            sync_badge,
-            container(text(sync_tip).size(11))
-                .padding(6)
-                .style(container::rounded_box),
-            Position::Bottom,
-        )
-        .gap(4),
-    );
-
-    tabs = tabs.push(Space::new().width(4));
-
-    if controller.ble_status == BleStatus::Connected {
-        let sync_style = if controller
-            .sync_last_click
-            .map(|t| t.elapsed().as_millis() < 1000)
-            .unwrap_or(false)
-        {
-            button::primary
-        } else {
-            button::secondary
-        };
-
-        tabs = tabs.push(
-            tooltip(
-                button(text("Sync").size(11))
-                    .on_press(InterfaceMessage::BleRequestDump)
-                    .padding([4, 10])
-                    .style(sync_style),
-                container(text("Click to request state dump from mixer").size(11))
-                    .padding(6)
-                    .style(container::rounded_box),
-                Position::Bottom,
-            )
-            .gap(4),
-        );
-        tabs = tabs.push(Space::new().width(4));
-    }
 
     let bt_led = build_ble_indicator(controller);
     tabs = tabs.push(bt_led);
@@ -150,6 +73,27 @@ pub fn view_nav_bar(controller: &FLOW8Controller) -> Element<'_, InterfaceMessag
         tooltip(
             settings_btn,
             container(text("Settings").size(11))
+                .padding(6)
+                .style(container::rounded_box),
+            tooltip::Position::Bottom,
+        )
+        .gap(4),
+    );
+
+    tabs = tabs.push(Space::new().width(4));
+
+    let about_btn = if controller.current_page == Page::About {
+        button(text("\u{2753}").size(13)).padding([4, 8])
+    } else {
+        button(text("\u{2753}").size(13))
+            .on_press(InterfaceMessage::NavigateTo(Page::About))
+            .padding([4, 8])
+            .style(button::secondary)
+    };
+    tabs = tabs.push(
+        tooltip(
+            about_btn,
+            container(text("About (app info, manual, debug log)").size(11))
                 .padding(6)
                 .style(container::rounded_box),
             tooltip::Position::Bottom,
@@ -246,18 +190,4 @@ fn build_ble_indicator(controller: &FLOW8Controller) -> Element<'_, InterfaceMes
     )
     .gap(4)
     .into()
-}
-
-fn format_last_sync(last_sync: Option<std::time::Instant>) -> String {
-    match last_sync {
-        None => "Never synced".to_string(),
-        Some(t) => {
-            let secs = t.elapsed().as_secs();
-            if secs < 60 {
-                "Last sync: less than 1m ago".to_string()
-            } else {
-                format!("Last sync: {}m ago", secs / 60)
-            }
-        }
-    }
 }

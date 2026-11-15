@@ -6,7 +6,7 @@ const NOTE_ON_PREFIX: u8 = 0x90;
 const CONTROL_CHANGE_PREFIX: u8 = 0xB0;
 const PROGRAM_CHANGE_PREFIX: u8 = 0xC0;
 const SYSEX_START: u8 = 0xF0;
-const FLOW_CLIENT_NAME: &str = "FLOW 8 Midi Controller";
+const FLOW_CLIENT_NAME: &str = "FLOW 8 Controller";
 const FLOW_DEVICE_KEYWORD: &str = "FLOW 8";
 
 pub fn create_sysex_channel() -> (mpsc::Sender<Vec<u8>>, mpsc::Receiver<Vec<u8>>) {

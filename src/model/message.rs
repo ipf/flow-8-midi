@@ -1,5 +1,5 @@
 use super::channels::{BusId, BusIdx, ChannelId, FxSlotId};
-use super::flow8::SyncInterval;
+use super::flow8::{SyncInterval};
 use super::page::Page;
 use iced::Theme;
 
@@ -36,11 +36,22 @@ pub enum InterfaceMessage {
     FxPreset(FxSlotId, u8),
     FxParam1(FxSlotId, u8),
     FxParam2(FxSlotId, u8),
+    FxRouting(FxSlotId, bool, bool, bool),
     FxMute,
     TapTempo,
 
     LoadSnapshot(u8),
     ResetMixer,
+
+    RenameStartChannel(ChannelId),
+    RenameStartSnapshot(usize),
+    SnapshotSaveStart(usize),
+    RenameChanged(String),
+    RenameSubmit,
+    RenameCancel,
+    DeleteSnapshot(usize),
+    /// Device setting write: id byte (0x01..=0x0f) and value byte
+    SetDeviceSetting(u8, u8),
 
     ThemeChanged(Theme),
     SyncIntervalChanged(SyncInterval),
@@ -53,7 +64,6 @@ pub enum InterfaceMessage {
     CopyHexDump,
     Tick,
     BleConnect,
-    BleRequestDump,
     #[cfg(any(debug_assertions, feature = "dev-tools"))]
     CalibrateStart,
     #[cfg(any(debug_assertions, feature = "dev-tools"))]

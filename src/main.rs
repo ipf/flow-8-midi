@@ -6,10 +6,8 @@ pub mod service;
 mod view;
 
 use view::{
-    device_select_page::view_device_select, eq_page::view_eq,
-    fx_page::view_fx, mixer_page::view_mixer,
-    nav_bar::view_nav_bar, sends_page::view_sends, settings_page::view_settings,
-    snapshots_page::view_snapshots,
+    device_select_page::view_device_select,
+    mixer_page::view_mixer, nav_bar::view_nav_bar, settings_page::view_settings,
 };
 use image::load_from_memory;
 use service::ble;
@@ -19,7 +17,12 @@ use service::midi::{
 };
 use service::midi_mapper::match_midi_command;
 use service::sysex_parser;
-use model::{flow8::FLOW8Controller, message::InterfaceMessage, page::Page};
+use model::{
+    channels::BusType,
+    flow8::{FLOW8Controller, MeterMsg, RenameTarget},
+    message::InterfaceMessage,
+    page::Page,
+};
 
 use iced::{
     widget::{column, scrollable},
@@ -48,12 +51,15 @@ fn clipboard_cmd() -> &'static str {
     }
 }
 
-const APPLICATION_NAME: &str = "FLOW 8 MIDI Controller";
-const PREFERRED_WIDTH: f32 = 1200.0;
+const APPLICATION_NAME: &str = "FLOW 8 Controller";
+const PREFERRED_WIDTH: f32 = 1500.0;
 const PREFERRED_HEIGHT: f32 = 700.0;
 const MIN_WIDTH: f32 = 800.0;
 const MIN_HEIGHT: f32 = 500.0;
 static ICON: &[u8] = include_bytes!("../resources/icon.ico");
+// DSEG7 7-segment font for the TAP tempo readout (OFL, see
+// assets/fonts/LICENSE-DSEG.txt)
+static FONT_DSEG: &[u8] = include_bytes!("../assets/fonts/DSEG7Classic-Bold.ttf");
 
 fn initial_window_size() -> Size {
     let (max_w, max_h) = screen_size_override().unwrap_or_else(available_screen_size);
@@ -106,7 +112,7 @@ fn available_screen_size() -> (f32, f32) {
     (PREFERRED_WIDTH, PREFERRED_HEIGHT)
 }
 
-fn boot() -> FLOW8Controller {
+fn boot() -> (FLOW8Controller, iced::Task<InterfaceMessage>) {
     logger::init();
     let mut controller = FLOW8Controller::new();
 
@@ -119,7 +125,9 @@ fn boot() -> FLOW8Controller {
     }
 
     try_connect_flow8(&mut controller);
-    controller
+    // iced 0.14's application().font() never registers its bytes (dead
+    // settings.fonts field) — fonts must load via the task API
+    (controller, iced::font::load(FONT_DSEG).discard())
 }
 
 fn theme(state: &FLOW8Controller) -> Theme {
@@ -159,25 +167,32 @@ fn start_ble_connection(controller: &mut FLOW8Controller) {
 
     let (status_tx, status_rx) = std::sync::mpsc::channel();
     let (snapshot_tx, snapshot_rx) = std::sync::mpsc::channel();
+    let (meter_tx, meter_rx) = std::sync::mpsc::channel();
+    let (settings_tx, settings_rx) = std::sync::mpsc::channel();
     controller.ble_status_receiver = Some(status_rx);
     controller.snapshot_names_receiver = Some(snapshot_rx);
+    controller.meter_receiver = Some(meter_rx);
+    controller.ble_settings_receiver = Some(settings_rx);
     controller.ble_status = ble::BleStatus::Scanning;
 
     let conn_arc = controller.ble_connection.clone();
-    std::thread::spawn(move || match ble::connect_flow8_ble(status_tx, snapshot_tx) {
+    std::thread::spawn(move || {
+        match ble::connect_flow8_ble(status_tx, snapshot_tx, meter_tx, settings_tx) {
         Ok(conn) => {
             log!("[BLE] Connection established. Sending dump trigger...");
             let trigger_result = ble::send_dump_trigger(&conn);
-            if let Ok(mut guard) = conn_arc.lock() {
-                *guard = Some(conn);
-            }
             match trigger_result {
                 Ok(_) => log!("[BLE] Initial dump trigger sent"),
                 Err(e) => log_error!("[BLE] Initial dump trigger failed: {}", e),
             }
+
+            if let Ok(mut guard) = conn_arc.lock() {
+                *guard = Some(conn.clone());
+            }
         }
         Err(e) => {
             log_error!("[BLE] Connection failed: {}", e);
+        }
         }
     });
 }
@@ -223,21 +238,119 @@ fn try_connect_flow8(controller: &mut FLOW8Controller) {
     }
 }
 
+/// Send the full FX setup block (0x11: params 1-3 + Main/Mon1/Mon2 routing)
+/// for one FX slot, using the slot's current model state.
+/// Channel mute (0x08) / solo (0x01): struct commands with [ch_id][state]
+/// at cmd[24..25] (queueChannelMuteCommandPackets @0x7e2d0 /
+/// queueChannelSoloCommandPackets @0x7e340).
+fn send_channel_flag(controller: &FLOW8Controller, opcode: u8, ch_id: u8, state: bool) {
+    let conn_arc = controller.ble_connection.clone();
+    std::thread::spawn(move || {
+        let Ok(guard) = conn_arc.lock() else {
+            return;
+        };
+        if let Some(conn) = guard.as_ref() {
+            if let Err(e) = ble::send_ble_struct_command(conn, opcode, &[ch_id, state as u8]) {
+                log_warn!("[BLE] cmd 0x{:02X} failed: {}", opcode, e);
+            } else {
+                log!("[BLE] ch {} flag 0x{:02X} = {}", ch_id, opcode, state);
+            }
+        }
+    });
+}
+
+fn send_fx_setup(controller: &FLOW8Controller, fx_idx: u8) {
+    let Some(fx_id) = controller
+        .buses
+        .iter()
+        .filter(|b| b.bus_type == BusType::Fx)
+        .nth(fx_idx as usize)
+        .map(|b| b.id)
+    else {
+        log_warn!("[BLE] FX setup: no FX bus in buses list for slot {}", fx_idx + 1);
+        return;
+    };
+    let Some(f) = controller.fx_slots.get(fx_idx as usize) else {
+        log_warn!("[BLE] FX setup: fx slot {} missing", fx_idx + 1);
+        return;
+    };
+    let (p1, p2, p3) = (f.param1, f.param2, f.param3);
+    let (m, m1, m2) = (f.route_main, f.route_mon1, f.route_mon2);
+    let conn_arc = controller.ble_connection.clone();
+    std::thread::spawn(move || {
+        let Ok(guard) = conn_arc.lock() else {
+            log_warn!("[BLE] FX setup: connection lock poisoned");
+            return;
+        };
+        if let Some(conn) = guard.as_ref() {
+            // 0x11 id = the device's channelId space (FX1=0x0C, FX2=0x0D) —
+            // our old fx_id 10/11 = Mon1/Mon2 there
+            if let Err(e) = ble::send_fx_setup(conn, 0x0A + (fx_id - 8), p1, p2, p3, m, m1, m2) {
+                log_warn!("[BLE] FX setup failed: {}", e);
+            } else {
+                log!("[BLE] FX {} setup sent (params + routing)", fx_idx + 1);
+            }
+        } else {
+            log_warn!("[BLE] FX setup: no BLE connection");
+        }
+    });
+}
+
 fn subscription(_controller: &FLOW8Controller) -> Subscription<InterfaceMessage> {
-    iced::time::every(std::time::Duration::from_millis(200)).map(|_| InterfaceMessage::Tick)
+    iced::time::every(std::time::Duration::from_millis(50)).map(|_| InterfaceMessage::Tick)
 }
 
 fn update(controller: &mut FLOW8Controller, message: InterfaceMessage) {
+    if let InterfaceMessage::BusLevel(_, bus_id, value) = &message {
+        if *bus_id >= 10 {
+            // FX return fader: ChannelMaster (0x06, dst = own id) — the
+            // official app's path for every output fader including FX.
+            // (The old "dead" proof was confounded: the FX bus meter is
+            // post-routing, so a working return still metered silence while
+            // FX routing to Main was off.) ChannelMaster id space:
+            // Main=0x0F, Mon1/2=0x0A/0x0B, FX1/2=0x0C/0x0D. UI CC scale:
+            // −70…+10 dB, cc 0 = OFF (−144).
+            let cmd_id = 0x0A + (*bus_id - 8);
+            let db = ble::level_cc_to_db(*value);
+            let conn_arc = controller.ble_connection.clone();
+            std::thread::spawn(move || {
+                let Ok(guard) = conn_arc.lock() else {
+                    return;
+                };
+                if let Some(conn) = guard.as_ref() {
+                    if let Err(e) = ble::send_channel_master(conn, cmd_id, cmd_id, db) {
+                        log_warn!("[BLE] FX return ChannelMaster failed: {}", e);
+                    } else {
+                        log!("[BLE] FX return 0x{:02X} = {:.1} dB", cmd_id, db);
+                    }
+                }
+            });
+            update_interface(controller, message);
+            return;
+        }
+    }
     match_midi_command(&message, &mut controller.midi_conn);
     update_interface(controller, message);
 }
 
 fn try_ble_dump_trigger(controller: &FLOW8Controller) -> Option<Result<(), String>> {
     let conn_arc = controller.ble_connection.clone();
-    conn_arc
-        .lock()
-        .ok()
-        .and_then(|guard| guard.as_ref().map(ble::send_dump_trigger))
+    // never block the UI thread: BlueZ write calls can stall up to 30 s
+    let has_conn = conn_arc.lock().ok().map(|g| g.is_some()).unwrap_or(false);
+    if !has_conn {
+        return None;
+    }
+    std::thread::spawn(move || {
+        let Ok(guard) = conn_arc.lock() else {
+            return;
+        };
+        if let Some(conn) = guard.as_ref() {
+            if let Err(e) = ble::send_dump_trigger(conn) {
+                log_error!("[BLE] Dump trigger failed: {}", e);
+            }
+        }
+    });
+    Some(Ok(()))
 }
 
 fn view(controller: &FLOW8Controller) -> Element<'_, InterfaceMessage> {
@@ -249,15 +362,19 @@ fn view(controller: &FLOW8Controller) -> Element<'_, InterfaceMessage> {
 
     let page_content = match controller.current_page {
         Page::Mixer => view_mixer(controller),
-        Page::Eq => view_eq(controller),
-        Page::Sends => view_sends(controller),
-        Page::Fx => view_fx(controller),
-        Page::Snapshots => view_snapshots(controller),
         Page::Settings => view_settings(controller),
+        Page::About => crate::view::about_page::view_about(controller),
+        Page::Manual => crate::view::manual_page::view_manual(controller),
         Page::DeviceSelect => unreachable!(),
     };
 
-    column![nav, scrollable(page_content).height(Fill)]
+    // mixer fills the window exactly (no scrollbar); other pages scroll
+    let page = match controller.current_page {
+        Page::Mixer => page_content,
+        _ => scrollable(page_content).height(Fill).into(),
+    };
+
+    column![nav, page]
         .width(Fill)
         .height(Fill)
         .into()
@@ -291,12 +408,20 @@ fn update_interface(controller: &mut FLOW8Controller, message: InterfaceMessage)
         }
 
         InterfaceMessage::Mute(ch, _) => {
-            let c = &mut controller.channels[ch as usize];
-            c.is_muted = !c.is_muted;
+            let (id, state) = {
+                let c = &mut controller.channels[ch as usize];
+                c.is_muted = !c.is_muted;
+                (c.id, c.is_muted)
+            };
+            send_channel_flag(controller, 0x08, id, state);
         }
         InterfaceMessage::Solo(ch, _) => {
-            let c = &mut controller.channels[ch as usize];
-            c.is_soloed = !c.is_soloed;
+            let (id, state) = {
+                let c = &mut controller.channels[ch as usize];
+                c.is_soloed = !c.is_soloed;
+                (c.id, c.is_soloed)
+            };
+            send_channel_flag(controller, 0x01, id, state);
         }
         InterfaceMessage::Gain(ch, value) => {
             let c = &mut controller.channels[ch as usize];
@@ -416,21 +541,116 @@ fn update_interface(controller: &mut FLOW8Controller, message: InterfaceMessage)
                 eq.bands_synced[band_index as usize] = true;
             }
         }
-
-        InterfaceMessage::FxPreset(fx_id, value) => {
+        InterfaceMessage::FxPreset(fx_id, preset) => {
             let f = &mut controller.fx_slots[fx_id as usize];
-            f.preset = value;
+            f.preset = preset;
             f.preset_synced = true;
+            if let Some(fx_bus_id) = controller
+                .buses
+                .iter()
+                .filter(|b| b.bus_type == BusType::Fx)
+                .nth(fx_id as usize)
+                .map(|b| b.id)
+            {
+                // 0x31 takes the device's channelId space (FX1=0x0C, FX2=0x0D
+                // — native queueFXLoadPresetCommandPackets passes the Kotlin's
+                // outputBus.channelId through unmapped) and a 0-based preset
+                // index (the 1..=16 dump values were the device's pushback).
+                // Our old fx_id 10/11 = Mon1/Mon2 in that space — every
+                // preset load landed on the wrong bank.
+                let fx_ch_id = 0x0A + (fx_bus_id - 8);
+                let conn_arc = controller.ble_connection.clone();
+                std::thread::spawn(move || {
+                    let Ok(guard) = conn_arc.lock() else {
+                        return;
+                    };
+                    if let Some(conn) = guard.as_ref() {
+                        if let Err(e) = ble::send_fx_preset(conn, fx_ch_id, preset) {
+                            log_warn!("[BLE] FX preset load failed: {}", e);
+                        } else {
+                            log!("[BLE] FX {} (0x{:02X}) preset {} sent", fx_id + 1, fx_ch_id, preset);
+                        }
+                    }
+                });
+
+                // the device resets FX state on a preset load (sends
+                // dump-proven; routing wiped too — the user found FX→Main
+                // off) — re-assert routing + params via FXSetup and the
+                // stored return levels once the load settles
+                let setups: Vec<(u8, u8, u8, u8, bool, bool, bool)> = (0..2)
+                    .filter_map(|i| {
+                        let f = controller.fx_slots.get(i)?;
+                        let bus = controller
+                            .buses
+                            .iter()
+                            .filter(|b| b.bus_type == BusType::Fx)
+                            .nth(i)?;
+                        Some((
+                            0x0A + (bus.id - 8),
+                            f.param1,
+                            f.param2,
+                            f.param3,
+                            f.route_main,
+                            f.route_mon1,
+                            f.route_mon2,
+                        ))
+                    })
+                    .collect();
+                let returns: Vec<(u8, u8)> = controller
+                    .buses
+                    .iter()
+                    .filter(|b| b.bus_type == BusType::Fx)
+                    .map(|b| (0x0A + (b.id - 8), b.bus_strip.level))
+                    .collect();
+                let conn_arc = controller.ble_connection.clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_millis(600));
+                    let Ok(guard) = conn_arc.lock() else {
+                        return;
+                    };
+                    if let Some(conn) = guard.as_ref() {
+                        for (ch_id, p1, p2, p3, m, m1, m2) in setups {
+                            if let Err(e) =
+                                ble::send_fx_setup(conn, ch_id, p1, p2, p3, m, m1, m2)
+                            {
+                                log_warn!("[BLE] FX setup restore failed: {}", e);
+                            }
+                        }
+                        for (ch_id, cc) in returns {
+                            let db = ble::level_cc_to_db(cc);
+                            if let Err(e) = ble::send_channel_master(conn, ch_id, ch_id, db) {
+                                log_warn!("[BLE] FX return restore failed: {}", e);
+                            }
+                        }
+                        log!("[BLE] FX routing/params/returns restored after preset load");
+                    }
+                });
+            }
         }
         InterfaceMessage::FxParam1(fx_id, value) => {
             let f = &mut controller.fx_slots[fx_id as usize];
             f.param1 = value;
             f.param1_synced = true;
+            f.route_synced = true; // FXSetup re-asserts routing
+            // knob on_change fires per drag frame — same as every other
+            // knob (USB CC path); the BLE write serializes on the lock
+            send_fx_setup(controller, fx_id);
         }
         InterfaceMessage::FxParam2(fx_id, value) => {
             let f = &mut controller.fx_slots[fx_id as usize];
             f.param2 = value;
             f.param2_synced = true;
+            f.route_synced = true; // FXSetup re-asserts routing
+            send_fx_setup(controller, fx_id);
+        }
+        InterfaceMessage::FxRouting(fx_idx, to_main, to_mon1, to_mon2) => {
+            if let Some(f) = controller.fx_slots.get_mut(fx_idx as usize) {
+                f.route_main = to_main;
+                f.route_mon1 = to_mon1;
+                f.route_mon2 = to_mon2;
+                f.route_synced = true;
+            }
+            send_fx_setup(controller, fx_idx);
         }
         InterfaceMessage::FxMute => {
             controller.fx_muted = !controller.fx_muted;
@@ -438,10 +658,94 @@ fn update_interface(controller: &mut FLOW8Controller, message: InterfaceMessage)
                 send_cc(conn, 15, 1, if controller.fx_muted { 127 } else { 0 });
             }
         }
-        InterfaceMessage::TapTempo => {}
+        InterfaceMessage::TapTempo => {
+            let now = std::time::Instant::now();
+            // keep taps within 3 s of each other, at most 5 (official-app behavior)
+            controller
+                .tap_times
+                .retain(|t| now.duration_since(*t).as_secs_f32() < 3.0);
+            controller.tap_times.push(now);
+            if controller.tap_times.len() > 5 {
+                controller.tap_times.remove(0);
+            }
+            if let Some(bpm) = controller.current_tap_bpm() {
+                let conn_arc = controller.ble_connection.clone();
+                std::thread::spawn(move || {
+                    let Ok(guard) = conn_arc.lock() else {
+                        return;
+                    };
+                    if let Some(conn) = guard.as_ref() {
+                        if let Err(e) = ble::send_fx_tempo(conn, bpm) {
+                            log_warn!("[BLE] FX tempo failed: {}", e);
+                        } else {
+                            log!("[BLE] FX tempo set to {} BPM", bpm);
+                        }
+                    }
+                });
+            }
+        }
+
+        InterfaceMessage::DeleteSnapshot(slot) => {
+            let now = std::time::Instant::now();
+            let confirmed = controller
+                .delete_pending
+                .map(|(s, t)| s == slot && now.duration_since(t).as_millis() < 800)
+                .unwrap_or(false);
+            if !confirmed {
+                controller.delete_pending = Some((slot, now));
+                log!("[APP] Delete snapshot {}: click again to confirm", slot + 1);
+                return;
+            }
+            controller.delete_pending = None;
+            log!("[APP] Deleting snapshot {}", slot + 1);
+            if let Some(name) = controller.snapshot_names.get_mut(slot) {
+                *name = None;
+            }
+            let conn_arc = controller.ble_connection.clone();
+            let (snap_tx, snap_rx) = std::sync::mpsc::channel();
+            controller.snapshot_names_receiver = Some(snap_rx);
+            std::thread::spawn(move || {
+                let Ok(guard) = conn_arc.lock() else {
+                    return;
+                };
+                let Some(conn) = guard.as_ref() else {
+                    log_warn!("[BLE] Delete snapshot: not connected");
+                    return;
+                };
+                match ble::send_snapshot_delete(conn, slot as u8) {
+                    Ok(_) => log!("[BLE] Snapshot delete sent"),
+                    Err(e) => log_warn!("[BLE] Snapshot delete failed: {}", e),
+                }
+                let names = ble::refresh_snapshot_names(conn);
+                let _ = snap_tx.send(names);
+            });
+        }
+
+        InterfaceMessage::SetDeviceSetting(id, value) => {
+            controller.ble_settings[id as usize] = Some(value);
+            let conn_arc = controller.ble_connection.clone();
+            std::thread::spawn(move || {
+                let Ok(guard) = conn_arc.lock() else {
+                    return;
+                };
+                if let Some(conn) = guard.as_ref() {
+                    match ble::send_setting(conn, id, value) {
+                        Ok(_) => log!("[BLE] Setting {:02X} <- {:02X}", id, value),
+                        Err(e) => log_warn!("[BLE] Setting {:02X} failed: {}", id, e),
+                    }
+                }
+            });
+        }
 
         InterfaceMessage::Tick => {
             controller.tick_counter = controller.tick_counter.wrapping_add(1);
+
+            // clear the snapshot-delete confirm window
+            if let Some((_, t)) = controller.delete_pending {
+                if t.elapsed().as_millis() >= 800 {
+                    controller.delete_pending = None;
+                }
+            }
 
             let pending: Vec<Vec<u8>> = controller
                 .sysex_receiver
@@ -494,8 +798,161 @@ fn update_interface(controller: &mut FLOW8Controller, message: InterfaceMessage)
 
             if let Some(ref snap_rx) = controller.snapshot_names_receiver {
                 while let Ok(names) = snap_rx.try_recv() {
+                    // a failed refresh returns empty — don't wipe known names
+                    if names.is_empty() {
+                        continue;
+                    }
                     log!("[BLE] Received {} snapshot names", names.len());
                     controller.snapshot_names = names;
+                }
+            }
+
+            // device settings read from the state dump's tail at connect
+            if let Some(ref settings_rx) = controller.ble_settings_receiver {
+                while let Ok((id, value)) = settings_rx.try_recv() {
+                    log!("[BLE] Setting {:02X} read back: {:02X}", id, value);
+                    controller.ble_settings[id as usize] = Some(value);
+                }
+            }
+
+            // VU meters: display slides toward the last-frame level so motion
+            // is smooth between the device's ~400 ms frame cadence (factors
+            // per 50 ms tick; 200 ms cadence equivalents: 0.90 / 0.995).
+            for ch in &mut controller.channels {
+                if ch.meter_target > ch.meter {
+                    ch.meter += (ch.meter_target - ch.meter) * 0.6;
+                } else {
+                    ch.meter *= 0.975;
+                }
+            }
+            for bus in &mut controller.buses {
+                if bus.meter_target > bus.meter {
+                    bus.meter += (bus.meter_target - bus.meter) * 0.6;
+                } else {
+                    bus.meter *= 0.9988;
+                }
+            }
+            if let Some(ref meter_rx) = controller.meter_receiver {
+                while let Ok(msg) = meter_rx.try_recv() {
+                    match msg {
+                        MeterMsg::Frame(values, out_rot, gr) => {
+                            // floats 0-9 (official index table): 0-3 = inputs 1-4,
+                            // 4/5 = input5 L/R, 6/7 = input6 L/R, 8/9 = USB/BT L/R
+                            for (i, ch) in controller.channels.iter_mut().enumerate() {
+                                let db = match i {
+                                    0..=3 => values.get(i).copied(),
+                                    4 => values.get(4).zip(values.get(5)).map(|(l, r)| l.max(*r)),
+                                    5 => values.get(6).zip(values.get(7)).map(|(l, r)| l.max(*r)),
+                                    _ => values.get(8).zip(values.get(9)).map(|(l, r)| l.max(*r)),
+                                };
+                                if let Some(db) = db {
+                                    // the frame meters the channel input
+                                    // pre-fader — apply the channel fader
+                                    // (and mute) so the meter shows the
+                                    // level after the levelling
+                                    let fader_db = if ch.is_muted {
+                                        -144.0
+                                    } else {
+                                        crate::service::ble::level_cc_to_db(
+                                            ch.channel_strip.level,
+                                        )
+                                    };
+                                    let linear = crate::service::ble::meter_db_to_linear(
+                                        (db + fader_db).max(-144.0),
+                                    );
+                                    ch.meter_target = linear;
+                                }
+                                // GR: our channel i == the device's input
+                                // channel idx (0..=6), gr[7] = the metered
+                                // output
+                                ch.gr = gr.get(i as usize).copied().unwrap_or(0);
+                            }
+                            // floats 10/11 = L/R of the rotated metered output
+                            // (rotation 0..4 → bus id 7+rot =
+                            // Main/Mon 1/Mon 2/FX 1/FX 2)
+                            if let (Some(l), Some(r)) = (values.get(10), values.get(11)) {
+                                let db = l.max(*r);
+                                let bus_id = 7 + out_rot as u8;
+                                if let Some(bus) =
+                                    controller.buses.iter_mut().find(|b| b.id == bus_id)
+                                {
+                                    bus.meter_target =
+                                        crate::service::ble::meter_db_to_linear(db);
+                                    bus.gr = gr.get(7).copied().unwrap_or(0);
+                                }
+                            }
+                        }
+                        MeterMsg::Fader { input, output, value } => {
+                            // 0x06 push = fader position, NOT a signal level:
+                            // mirror it into the UI. The value byte is fix8
+                            // (F48 dB index, selector 3) — convert to the
+                            // 1..=127 CC scale first (raw 190 = −0.2 dB, not
+                            // +50). Id space (official app: LRBusChannelId
+                            // 15, AUX 10/11, FX 12/13): a bus id as `input`
+                            // = that bus's own fader (FX return level), a
+                            // channel id = its send level to `output`.
+                            let value = crate::service::ble::fix8_to_level_cc(value);
+                            let bus_fader = match input {
+                                0x0F => Some(7),
+                                0x0A => Some(8),
+                                0x0B => Some(9),
+                                0x0C => Some(10),
+                                0x0D => Some(11),
+                                0x18 => Some(8),
+                                0x19 => Some(9),
+                                _ => None,
+                            };
+                            if let Some(bus_id) = bus_fader {
+                                if let Some(bus) = controller
+                                    .buses
+                                    .iter_mut()
+                                    .find(|b| b.id == bus_id)
+                                {
+                                    bus.bus_strip.level = value;
+                                    bus.bus_strip.level_synced = true;
+                                }
+                            } else if let Some(ch) =
+                                controller.channels.get_mut((input & 0x07) as usize)
+                            {
+                                match output {
+                                    0x0F => {
+                                        ch.channel_strip.level = value;
+                                        ch.channel_strip.level_synced = true;
+                                    }
+                                    0x0A | 0x18 => {
+                                        ch.sends.mon1 = value;
+                                        ch.sends.mon1_synced = true;
+                                    }
+                                    0x0B | 0x19 => {
+                                        ch.sends.mon2 = value;
+                                        ch.sends.mon2_synced = true;
+                                    }
+                                    0x0C => {
+                                        ch.sends.fx1 = value;
+                                        ch.sends.fx1_synced = true;
+                                    }
+                                    0x0D => {
+                                        ch.sends.fx2 = value;
+                                        ch.sends.fx2_synced = true;
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // clip latch: red dot above the fader for 2 s once the level hits 0 dBFS
+            // (latched on the raw frame target — the display lags it by design)
+            for ch in &mut controller.channels {
+                if ch.meter_target >= 0.99
+                    && ch
+                        .clip_time
+                        .map(|t| t.elapsed().as_millis() > 2000)
+                        .unwrap_or(true)
+                {
+                    ch.clip_time = Some(std::time::Instant::now());
                 }
             }
 
@@ -547,22 +1004,125 @@ fn update_interface(controller: &mut FLOW8Controller, message: InterfaceMessage)
             }
         }
 
-        InterfaceMessage::BleRequestDump => {
-            controller.sync_last_click = Some(std::time::Instant::now());
-            match try_ble_dump_trigger(controller) {
-                Some(Ok(_)) => {
-                    controller.last_sync_time = Some(std::time::Instant::now());
-                    log!("[APP] Dump trigger sent via BLE");
-                }
-                Some(Err(e)) => log_error!("[APP] Dump trigger failed: {}", e),
-                None => log_warn!("[APP] No BLE connection for dump trigger"),
-            }
-        }
-
         InterfaceMessage::LoadSnapshot(n) => {
             log!("[APP] Loading snapshot {}", n + 1);
             controller.mark_all_unsynced();
             controller.snapshot_resync_at = Some(std::time::Instant::now());
+            // recall over BLE (the MIDI Program Change goes out via the mapper;
+            // BLE works even when the USB MIDI path is wedged)
+            let conn_arc = controller.ble_connection.clone();
+            std::thread::spawn(move || {
+                let Ok(guard) = conn_arc.lock() else {
+                    return;
+                };
+                if let Some(conn) = guard.as_ref() {
+                    match ble::send_snapshot_load(conn, n) {
+                        Ok(_) => log!("[BLE] Snapshot load sent"),
+                        Err(e) => log_warn!("[BLE] Snapshot load failed: {}", e),
+                    }
+                }
+            });
+        }
+        InterfaceMessage::RenameStartChannel(ch_id) => {
+            let name = controller
+                .channels
+                .iter()
+                .find(|c| c.id == ch_id)
+                .map(|c| c.name.clone())
+                .unwrap_or_default();
+            controller.rename_target = Some(RenameTarget::Channel(ch_id));
+            controller.rename_buffer = name;
+        }
+        InterfaceMessage::RenameStartSnapshot(slot) => {
+            controller.rename_target = Some(RenameTarget::Snapshot(slot));
+            controller.rename_buffer = controller
+                .snapshot_names
+                .get(slot)
+                .cloned()
+                .flatten()
+                .unwrap_or_default();
+        }
+        InterfaceMessage::SnapshotSaveStart(slot) => {
+            controller.rename_target = Some(RenameTarget::SnapshotSave(slot));
+            controller.rename_buffer = controller
+                .snapshot_names
+                .get(slot)
+                .cloned()
+                .flatten()
+                .unwrap_or_default();
+        }
+        InterfaceMessage::RenameChanged(value) => {
+            controller.rename_buffer = value;
+        }
+        InterfaceMessage::RenameCancel => {
+            controller.rename_target = None;
+            controller.rename_buffer.clear();
+        }
+        InterfaceMessage::RenameSubmit => {
+            let Some(target) = controller.rename_target.take() else {
+                return;
+            };
+            let name = controller.rename_buffer.clone();
+            controller.rename_buffer.clear();
+
+            if let RenameTarget::Channel(ch_id) = target {
+                if let Some(ch) = controller.channels.iter_mut().find(|c| c.id == ch_id) {
+                    ch.name = name.clone();
+                    ch.name_synced = true;
+                }
+            }
+
+            // snapshot ops get a fresh names channel the Tick loop consumes
+            let (snap_tx, snap_rx) = std::sync::mpsc::channel();
+            if matches!(target, RenameTarget::Snapshot(_) | RenameTarget::SnapshotSave(_)) {
+                controller.snapshot_names_receiver = Some(snap_rx);
+            }
+
+            let conn_arc = controller.ble_connection.clone();
+            std::thread::spawn(move || {
+                let Ok(guard) = conn_arc.lock() else {
+                    log_warn!("[BLE] Rename: connection mutex poisoned");
+                    return;
+                };
+                let Some(conn) = guard.as_ref() else {
+                    log_warn!("[BLE] Rename: not connected");
+                    return;
+                };
+                let result = match target {
+                    RenameTarget::Channel(ch_id) => {
+                        log!("[BLE] Renaming channel {} to \"{}\"", ch_id + 1, name);
+                        ble::send_channel_rename(conn, ch_id, &name)
+                    }
+                    RenameTarget::Snapshot(slot) => {
+                        log!("[BLE] Renaming snapshot {} to \"{}\"", slot + 1, name);
+                        ble::send_snapshot_rename(conn, slot as u8, &name)
+                    }
+                    RenameTarget::SnapshotSave(slot) => {
+                        log!("[BLE] Saving mixer state to snapshot {} as \"{}\"", slot + 1, name);
+                        ble::send_snapshot_save(conn, slot as u8, &name)
+                    }
+                };
+                match result {
+                    Ok(_) => log!("[BLE] Rename/save command sent"),
+                    Err(e) => log_warn!("[BLE] Rename/save failed: {}", e),
+                }
+                if matches!(target, RenameTarget::Snapshot(_) | RenameTarget::SnapshotSave(_)) {
+                    // the mixer writes the snapshot to flash after acking a
+                    // save — an immediate 0x07 refresh reads stale data
+                    if matches!(target, RenameTarget::SnapshotSave(_)) {
+                        std::thread::sleep(std::time::Duration::from_secs(2));
+                    }
+                    let mut names = ble::refresh_snapshot_names(conn);
+                    if let RenameTarget::SnapshotSave(slot) = target {
+                        if names.get(slot) != Some(&Some(name.clone())) {
+                            log!("[BLE] Snapshot names stale after save — retrying");
+                            std::thread::sleep(std::time::Duration::from_millis(2500));
+                            names = ble::refresh_snapshot_names(conn);
+                        }
+                    }
+                    let _ = snap_tx.send(names);
+                }
+            });
         }
         InterfaceMessage::ResetMixer => {
             log!("[APP] Resetting mixer to default");
@@ -578,7 +1138,7 @@ fn update_interface(controller: &mut FLOW8Controller, message: InterfaceMessage)
             log!("[APP] Sync interval changed to {}", interval);
         }
         InterfaceMessage::OpenManual => {
-            open_url("https://github.com/abelroes/flow-8-midi/blob/main/docs/MANUAL.md");
+            controller.current_page = crate::model::page::Page::Manual;
         }
         InterfaceMessage::OpenRepository => {
             open_url("https://github.com/abelroes/flow-8-midi");

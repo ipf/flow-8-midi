@@ -7,7 +7,8 @@ use iced::Theme;
 use midir::{MidiInputConnection, MidiOutputConnection};
 
 use super::channels::{
-    AudioConnection, Bus, BusType, Channel, ChannelType, FxSlot, PhantomPower, PhantomPowerType,
+    AudioConnection, Bus, BusType, Channel, ChannelId, ChannelType, FxSlot, PhantomPower,
+    PhantomPowerType,
 };
 use super::page::Page;
 use crate::service::ble::{BleConnection, BleStatus};
@@ -15,6 +16,14 @@ use crate::service::ble::{BleConnection, BleStatus};
 use crate::service::sysex_calibration::CalibrationState;
 
 pub const SNAPSHOT_COUNT: usize = 15;
+
+/// What the inline rename editor is editing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RenameTarget {
+    Channel(ChannelId),
+    Snapshot(usize),
+    SnapshotSave(usize),
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SyncInterval {
@@ -65,6 +74,23 @@ impl fmt::Display for SyncInterval {
     }
 }
 
+/// Live meter data pushed by the BLE meter loop (service::ble::start_meter_loop).
+pub enum MeterMsg {
+    /// MeterUpdate (0x22): 15 f32 dB values — 0-9 inputs, 10/11 = L/R of the
+    /// currently metered output — plus the rotation index of that output and
+    /// the unpacked gain-reduction levels (native XAIRClient::updateMeters:
+    /// the GR u16 packs 8× 2-bit values — bits 2*i per input i, top 2 bits
+    /// for the metered output; 0..=3, only compressor/limiter channels).
+    /// gr indices 0..=6 = inputs 1-4/pairs/USB, 7 = the metered output.
+    Frame(Vec<f32>, usize, Vec<u8>),
+    /// ChannelMaster push (0x06): fader position (raw fix8 u8) of `input`
+    /// feeding output bus `output` — the device's per-bus mix, not a signal
+    /// level. input: 0x00-0x06 channel ids (0x08 bit = stereo flag),
+    /// 0x0F = Main fader, 0x18/0x19 = Mon 1/2 faders. output: 0x0F Main,
+    /// 0x18 Mon 1, 0x19 Mon 2 (a channel feeding Mon = its send level).
+    Fader { input: u8, output: u8, value: u8 },
+}
+
 pub struct FLOW8Controller {
     pub current_page: Page,
     pub theme: Theme,
@@ -83,13 +109,21 @@ pub struct FLOW8Controller {
     pub ble_connection: Arc<Mutex<Option<BleConnection>>>,
     pub tick_counter: u32,
     pub ble_last_click: Option<Instant>,
-    pub sync_last_click: Option<Instant>,
     pub sync_interval: SyncInterval,
     pub last_sync_time: Option<Instant>,
     pub snapshot_names: Vec<Option<String>>,
     pub snapshot_names_receiver: Option<mpsc::Receiver<Vec<Option<String>>>>,
     pub fx_muted: bool,
     pub snapshot_resync_at: Option<Instant>,
+    pub rename_target: Option<RenameTarget>,
+    pub rename_buffer: String,
+    pub tap_times: Vec<Instant>,
+    pub delete_pending: Option<(usize, Instant)>,
+    pub meter_receiver: Option<mpsc::Receiver<MeterMsg>>,
+    /// device-setting values parsed from the state dump's tail at connect
+    pub ble_settings_receiver: Option<mpsc::Receiver<(u8, u8)>>,
+    /// active device setting per id (0x01..=0x0f); read at connect, updated on click
+    pub ble_settings: [Option<u8>; 128],
     #[cfg(any(debug_assertions, feature = "dev-tools"))]
     pub calibration: CalibrationState,
 }
@@ -98,6 +132,23 @@ const CHANNEL_RANGE: RangeInclusive<u8> = 0..=6;
 const BUS_RANGE: RangeInclusive<u8> = 7..=11;
 
 impl FLOW8Controller {
+    /// 5-tap rolling average BPM (like the official app), None until 2+ taps.
+    pub fn current_tap_bpm(&self) -> Option<u16> {
+        let times = &self.tap_times;
+        if times.len() < 2 {
+            return None;
+        }
+        let intervals: Vec<f32> = times
+            .windows(2)
+            .map(|w| (w[1] - w[0]).as_secs_f32())
+            .collect();
+        let avg: f32 = intervals.iter().sum::<f32>() / intervals.len() as f32;
+        if avg <= 0.0 {
+            return None;
+        }
+        Some((60.0 / avg).round().clamp(30.0, 300.0) as u16)
+    }
+
     pub fn mark_all_synced(&mut self) {
         for ch in &mut self.channels {
             ch.mark_all_synced();
@@ -120,12 +171,6 @@ impl FLOW8Controller {
         for fx in &mut self.fx_slots {
             fx.mark_all_unsynced();
         }
-    }
-
-    pub fn is_globally_synced(&self) -> bool {
-        self.channels.iter().all(|c| c.is_all_synced())
-            && self.buses.iter().all(|b| b.is_all_synced())
-            && self.fx_slots.iter().all(|f| f.is_all_synced())
     }
 
     pub fn new() -> FLOW8Controller {
@@ -180,13 +225,19 @@ impl FLOW8Controller {
             ble_connection: Arc::new(Mutex::new(None)),
             tick_counter: 0,
             ble_last_click: None,
-            sync_last_click: None,
             sync_interval: SyncInterval::Min2,
             last_sync_time: None,
             snapshot_names: vec![None; SNAPSHOT_COUNT],
             snapshot_names_receiver: None,
             fx_muted: false,
             snapshot_resync_at: None,
+            rename_target: None,
+            rename_buffer: String::new(),
+            tap_times: Vec::new(),
+            delete_pending: None,
+            meter_receiver: None,
+            ble_settings_receiver: None,
+            ble_settings: [None; 128],
             #[cfg(any(debug_assertions, feature = "dev-tools"))]
             calibration: CalibrationState::new(),
         }

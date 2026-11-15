@@ -28,10 +28,6 @@ const LIMITER_MAX: f32 = 0.0;
 const LOWCUT_MIN_HZ: u16 = 20;
 const LOWCUT_MAX_HZ: u16 = 600;
 
-const NAMES_START: usize = 0x0554;
-const NAMES_STRIDE: usize = 0x1E;
-const NAME_SCAN_LEN: usize = 14;
-
 struct FloatParam {
     msb_off: usize,
     data_offs: [usize; 4],
@@ -302,12 +298,14 @@ const CHANNEL_PHANTOMS: [BoolParam; 2] = [
 struct FxSysExLayout {
     param1_off: usize,
     param2_off: usize,
+    param3_off: usize,
     preset_off: usize,
 }
 
+// shortcut: param3_off unverified (guessed from layout spacing), confirm on a real 0x22 dump
 const FX_SYSEX: [FxSysExLayout; 2] = [
-    FxSysExLayout { param1_off: 0x0BC5, param2_off: 0x0BC6, preset_off: 0x0BC9 },
-    FxSysExLayout { param1_off: 0x0BCD, param2_off: 0x0BCF, preset_off: 0x0BD1 },
+    FxSysExLayout { param1_off: 0x0BC5, param2_off: 0x0BC6, param3_off: 0x0BC7, preset_off: 0x0BC9 },
+    FxSysExLayout { param1_off: 0x0BCD, param2_off: 0x0BCF, param3_off: 0x0BD0, preset_off: 0x0BD1 },
 ];
 
 #[derive(Debug, Clone)]
@@ -365,6 +363,32 @@ pub fn validate_sysex_dump(data: &[u8]) -> Option<SysExDump> {
 
 pub fn apply_dump_to_controller(dump: &SysExDump, controller: &mut FLOW8Controller) {
 
+    // diff against the previous dump: which raw byte offsets changed (used to
+    // locate device-setting bytes — toggle a setting, re-dump, read the diff)
+    if let Some(ref prev) = controller.last_sysex_dump {
+        if prev.len() == dump.raw.len() {
+            let changed: Vec<usize> = prev
+                .iter()
+                .zip(dump.raw.iter())
+                .enumerate()
+                .filter(|(_, (a, b))| a != b)
+                .map(|(i, _)| i)
+                .collect();
+            if !changed.is_empty() {
+                let detail: Vec<String> = changed
+                    .iter()
+                    .take(24)
+                    .map(|&i| format!("{:04X}: {:02X}->{:02X}", i, prev[i], dump.raw[i]))
+                    .collect();
+                log!(
+                    "[SYSEX] Dump diff ({} bytes changed): {}",
+                    changed.len(),
+                    detail.join("  ")
+                );
+            }
+        }
+    }
+
     controller.last_sysex_dump = Some(dump.raw.clone());
 
     #[cfg(any(debug_assertions, feature = "dev-tools"))]
@@ -373,7 +397,10 @@ pub fn apply_dump_to_controller(dump: &SysExDump, controller: &mut FLOW8Controll
     log_hex_dump(&dump.raw);
 
     let mut synced = 0usize;
-    apply_channel_names(dump, controller);
+    // channel names: the 0x0554 offsets read mixer-state bytes, not names —
+    // the SysEx dump's name region is unknown and the BLE label frames
+    // (cmd 0x24/0x05) are never pushed in our session. Names stay empty (the
+    // strip shows the rename ✎); renames apply locally via op 0x05.
     synced += apply_channel_levels(dump, controller);
     synced += apply_channel_gains(dump, controller);
     synced += apply_channel_pans(dump, controller);
@@ -395,69 +422,6 @@ pub fn apply_dump_to_controller(dump: &SysExDump, controller: &mut FLOW8Controll
         dump.raw.len(),
         synced
     );
-}
-
-fn restore_sysex_byte(data: &[u8], pos: usize) -> Option<u8> {
-    let group_pos = (pos + 2) % 7;
-    if group_pos == 0 {
-        return None;
-    }
-    if pos < group_pos {
-        return Some(data[pos]);
-    }
-    let msb_off = pos - group_pos;
-    if msb_off >= data.len() {
-        return Some(data[pos]);
-    }
-    let msb = data[msb_off];
-    let bit_index = group_pos - 1;
-    let mut b = data[pos];
-    if msb & (1 << bit_index) != 0 {
-        b |= 0x80;
-    }
-    Some(b)
-}
-
-fn decode_sysex_name(data: &[u8], start: usize) -> String {
-    let end = (start + NAME_SCAN_LEN).min(data.len());
-    let mut restored: Vec<u8> = Vec::new();
-
-    for i in start..end {
-        if let Some(b) = restore_sysex_byte(data, i) {
-            restored.push(b);
-        }
-    }
-
-    let name_start = restored
-        .iter()
-        .position(|&b| b >= 0x20)
-        .unwrap_or(restored.len());
-    let after_start = &restored[name_start..];
-
-    let name_len = after_start
-        .iter()
-        .position(|&b| b == 0x00)
-        .unwrap_or(after_start.len());
-    let raw_bytes = &after_start[..name_len];
-
-    String::from_utf8(raw_bytes.to_vec())
-        .unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned())
-}
-
-fn apply_channel_names(dump: &SysExDump, controller: &mut FLOW8Controller) {
-    let data = &dump.raw;
-    for (i, ch) in controller.channels.iter_mut().enumerate() {
-        let off = NAMES_START + i * NAMES_STRIDE;
-        if off + NAME_SCAN_LEN > data.len() {
-            continue;
-        }
-        let name = decode_sysex_name(data, off);
-        if ch.name != name {
-            log_debug!("[SYSEX] Channel {} name: \"{}\"", i, name);
-        }
-        ch.name = name;
-        ch.name_synced = true;
-    }
 }
 
 fn decode_float(data: &[u8], param: &FloatParam) -> Option<f32> {
@@ -496,6 +460,20 @@ fn range_to_cc(value: f32, min: f32, max: f32) -> u8 {
     let clamped = value.clamp(min, max);
     let normalized = (clamped - min) / (max - min);
     (normalized * 127.0).round() as u8
+}
+
+/// gain dB → CC for the preset applier (same scale as the Gain knob)
+pub fn preset_gain_to_cc(db: f32) -> u8 {
+    range_to_cc(db, GAIN_MIN, GAIN_MAX)
+}
+
+/// HPF Hz → CC for the preset applier (0 Hz = off → knob minimum)
+pub fn preset_hpf_to_cc(hz: u16) -> u8 {
+    if hz == 0 {
+        0
+    } else {
+        lowcut_hz_to_cc(hz)
+    }
 }
 
 // ── Channel parameter apply functions ──────────────────────────────────
@@ -854,19 +832,18 @@ fn apply_fx_params(dump: &SysExDump, controller: &mut FLOW8Controller) -> usize 
             count += 1;
         }
 
-        let param1_byte = data[layout.param1_off];
-        let param1_cc = (param1_byte as u16 * 127 / 100).min(127) as u8;
-        controller.fx_slots[i].param1 = param1_cc;
+        // the wire byte is already in the sliders' 0..=100 domain — store it raw
+        controller.fx_slots[i].param1 = data[layout.param1_off];
         controller.fx_slots[i].param1_synced = true;
-        log_debug!("[SYSEX] {} param1: byte {} → CC {}", fx_names[i], param1_byte, param1_cc);
+        log_debug!("[SYSEX] {} param1: raw {}", fx_names[i], controller.fx_slots[i].param1);
         count += 1;
 
-        let param2_byte = data[layout.param2_off];
-        let param2_cc = (param2_byte as u16 * 127 / 100).min(127) as u8;
-        controller.fx_slots[i].param2 = param2_cc;
+        controller.fx_slots[i].param2 = data[layout.param2_off];
         controller.fx_slots[i].param2_synced = true;
-        log_debug!("[SYSEX] {} param2: byte {} → CC {}", fx_names[i], param2_byte, param2_cc);
+        log_debug!("[SYSEX] {} param2: raw {}", fx_names[i], controller.fx_slots[i].param2);
         count += 1;
+
+        controller.fx_slots[i].param3 = data[layout.param3_off];
     }
 
     count

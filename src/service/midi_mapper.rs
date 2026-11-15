@@ -1,4 +1,4 @@
-use crate::service::midi::{send_cc, send_note_on, send_program_change};
+use crate::service::midi::{send_cc, send_program_change};
 use crate::model::message::InterfaceMessage;
 use midir::MidiOutputConnection;
 
@@ -30,8 +30,17 @@ pub fn match_midi_command(
         | InterfaceMessage::SaveDebugLog
         | InterfaceMessage::Tick
         | InterfaceMessage::BleConnect
-        | InterfaceMessage::BleRequestDump
-        | InterfaceMessage::SyncIntervalChanged(_) => {}
+        | InterfaceMessage::SyncIntervalChanged(_)
+        | InterfaceMessage::RenameStartChannel(_)
+        | InterfaceMessage::RenameStartSnapshot(_)
+        | InterfaceMessage::SnapshotSaveStart(_)
+        | InterfaceMessage::RenameChanged(_)
+        | InterfaceMessage::RenameSubmit
+        | InterfaceMessage::RenameCancel
+        | InterfaceMessage::DeleteSnapshot(_)
+        | InterfaceMessage::SetDeviceSetting(_, _)
+        | InterfaceMessage::FxRouting(_, _, _, _)
+        | InterfaceMessage::TapTempo => {}
 
         #[cfg(any(debug_assertions, feature = "dev-tools"))]
         InterfaceMessage::CopyHexDump => {}
@@ -79,7 +88,6 @@ pub fn match_midi_command(
 
         // --- Global (MIDI Ch 15 = Ch 16 in 1-indexed) ---
         InterfaceMessage::FxMute => {}
-        InterfaceMessage::TapTempo => send_note_on(conn, 15, 0, 127),
         InterfaceMessage::LoadSnapshot(n) => send_program_change(conn, 15, n + 1),
         InterfaceMessage::ResetMixer => send_program_change(conn, 15, 16),
     }

@@ -4,11 +4,9 @@ use core::fmt;
 pub enum Page {
     DeviceSelect,
     Mixer,
-    Eq,
-    Sends,
-    Fx,
-    Snapshots,
     Settings,
+    About,
+    Manual,
 }
 
 impl fmt::Display for Page {
@@ -16,11 +14,9 @@ impl fmt::Display for Page {
         let text = match *self {
             Page::DeviceSelect => "Device",
             Page::Mixer => "Mixer",
-            Page::Eq => "EQ",
-            Page::Sends => "Sends",
-            Page::Fx => "FX",
-            Page::Snapshots => "Snapshots",
             Page::Settings => "Settings",
+            Page::About => "About",
+            Page::Manual => "Manual",
         };
         write!(f, "{}", text)
     }
