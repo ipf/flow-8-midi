@@ -115,7 +115,7 @@ fn build_device_section(controller: &FLOW8Controller) -> Element<'_, InterfaceMe
             Space::new().height(8),
             grid,
             Space::new().height(6),
-            text("Click sends the setting over BLE. Blue = last value sent (not read back from the device).")
+            text("Click sends the setting over BLE. Blue = active device setting (read at connect).")
                 .size(10),
         ]
         .padding([12, 14])

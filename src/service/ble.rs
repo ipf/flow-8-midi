@@ -330,6 +330,11 @@ async fn wait_for_cmd(stream: &mut NotifyStream, ptype: u8, timeout: Duration) -
                 continue;
             }
             if n.value[0] == ptype {
+                // full hex: the state dump's first chunk carries the dump
+                // head (the drain below only sees the follow-up chunks)
+                let hex: Vec<String> =
+                    n.value.iter().map(|b| format!("{:02X}", b)).collect();
+                log!("[BLE] Handshake {} chunk (len={}): {}", ptype, n.value.len(), hex.join(" "));
                 return Some(n.value);
             }
             log_debug!(
@@ -402,74 +407,6 @@ fn parse_snapshot_names(data: &[u8]) -> Vec<Option<String>> {
     names
 }
 
-const SETTING_READ_IDS: [u8; 12] = [
-    0x01, 0x02, 0x03, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F,
-];
-
-/// Probe GetSetting (0x26) for each known id while the notification stream is
-/// idle (between the state-dump drain and the snapshot request). The response
-/// shape is unverified — every notification is logged; values are parsed from
-/// the best-matching shapes so one device test settles it.
-async fn read_device_settings(
-    peripheral: &Peripheral,
-    characteristic: &Characteristic,
-    stream: &mut NotifyStream,
-) -> Vec<(u8, u8)> {
-    use tokio_stream::StreamExt;
-
-    log!("[BLE] Reading device settings (0x26)...");
-    let mut found: Vec<(u8, u8)> = Vec::new();
-    for &id in &SETTING_READ_IDS {
-        // official GetSetting (XAIRClient.queueGetSettingCommandPackets):
-        // full cmd struct, setting id at data +0 — the data area is the
-        // cmd's 35-byte field (chunk_size = 38-3), zero-padded. Response
-        // arrives as a 0x25-typed cmd: id le32 at +24, len at +28, value
-        // at +29 (onSettingsCommandReceived).
-        let mut data = vec![id];
-        data.resize(35, 0);
-        let packet = [
-            (data.len() as u8),
-            0x00,
-            0x26,
-            0x00,
-            0x01,
-            0x00,
-        ];
-        let mut write_buf = packet.to_vec();
-        write_buf.extend_from_slice(&data);
-        let write = peripheral.write(
-            characteristic,
-            &write_buf,
-            WriteType::WithoutResponse,
-        );
-        // cap the ack wait; without-response writes never complete on BlueZ
-        // but the packet is delivered
-        let _ = tokio::time::timeout(Duration::from_millis(300), write).await;
-        while let Ok(Some(n)) =
-            tokio::time::timeout(Duration::from_millis(120), stream.next()).await
-        {
-            let v = &n.value;
-            log_debug!("[BLE] Settings readback: {:02X?}", &v[..v.len().min(32)]);
-            if v.len() >= 30 && v[0] == 0x25 {
-                // 0x25-typed response cmd: [type][..24 hdr..][id le32][len][value]
-                let sid = v[24];
-                if SETTING_READ_IDS.contains(&sid) {
-                    found.push((sid, v[29]));
-                }
-            } else if v.len() >= 4 && v[0] == 0x26 && v[1] == 0x01 {
-                // framed response: [0x26][01][id][value...]
-                found.push((v[2], v[3]));
-            } else if v.len() >= 3 && v[0] == 0x26 {
-                found.push((v[1], v[2]));
-            } else if v.len() == 2 && SETTING_READ_IDS.contains(&v[0]) {
-                found.push((v[0], v[1]));
-            }
-        }
-    }
-    log!("[BLE] Settings readback: {} values parsed", found.len());
-    found
-}
-
 async fn fetch_snapshot_names(
     peripheral: &Peripheral,
     characteristic: &Characteristic,
@@ -480,7 +417,8 @@ async fn fetch_snapshot_names(
 
     log!("[BLE] Draining state dump (0x38)...");
     let mut dump_chunks = 0u32;
-    let drain_deadline = std::time::Instant::now() + Duration::from_secs(3);
+    let mut dump_payloads: Vec<Vec<u8>> = Vec::new();
+    let drain_deadline = std::time::Instant::now() + Duration::from_secs(6);
     while dump_chunks < 4 {
         let wait = drain_deadline.saturating_duration_since(std::time::Instant::now());
         if wait.is_zero() {
@@ -491,12 +429,10 @@ async fn fetch_snapshot_names(
                 if !notification.value.is_empty() {
                     let ptype = notification.value[0];
                     if ptype == STATE_DUMP_TYPE {
-                        // full hex of the mixer-state chunks: the channel
-                        // on/mute states (leftOn|rightOn flags per 12 slots,
-                        // FX1 = slot 10) live here, unparsed so far
-                        let hex: Vec<String> =
-                            notification.value.iter().map(|b| format!("{:02X}", b)).collect();
-                        log!("[BLE] MixerState chunk (len={}): {}", notification.value.len(), hex.join(" "));
+                        let v = &notification.value;
+                        if v.len() > 5 {
+                            dump_payloads.push(v[4..v.len() - 1].to_vec());
+                        }
                         dump_chunks += 1;
                     } else {
                         log_debug!(
@@ -521,12 +457,42 @@ async fn fetch_snapshot_names(
         );
     }
 
-    // one-shot settings readback while the stream is idle
+    // Device settings ride the unsolicited state dump's tail: the full body
+    // ends [hp fix8][12 packed bools][6 extra bytes]; the first dump chunk
+    // (123 B) was consumed by the handshake, so the tail here starts at
+    // full-body offset 379. boolA bits: 0=0x01, 1=0x02, 2=0x03, 3=mute
+    // (no row), 4=0x07, 5=0x09, 6=0x0a, 7=0x0b; boolB: 0=0x0c, 1=0x0d,
+    // 2=0x0e (Main pad), 3=0x0f. 0x08 (Mon 1/2 source) is the routing byte
+    // the table skips — stays "last value sent".
     if let Some(settings_tx) = settings_tx {
-        for (id, value) in
-            read_device_settings(peripheral, characteristic, &mut notification_stream).await
-        {
-            let _ = settings_tx.send((id, value));
+        let body: Vec<u8> = dump_payloads.concat();
+        if body.len() >= 9 {
+            let tail = &body[body.len() - 9..];
+            log!(
+                "[BLE] Device settings tail: hp={:02X} boolA={:02X} boolB={:02X} extra={:02X?}",
+                tail[0],
+                tail[1],
+                tail[2],
+                &tail[3..]
+            );
+            let bool_a = tail[1];
+            let bool_b = tail[2];
+            let bits: [(u8, bool); 11] = [
+                (0x01, bool_a & 0x01 != 0),
+                (0x02, bool_a & 0x02 != 0),
+                (0x03, bool_a & 0x04 != 0),
+                (0x07, bool_a & 0x10 != 0),
+                (0x09, bool_a & 0x20 != 0),
+                (0x0a, bool_a & 0x40 != 0),
+                (0x0b, bool_a & 0x80 != 0),
+                (0x0c, bool_b & 0x01 != 0),
+                (0x0d, bool_b & 0x02 != 0),
+                (0x0e, bool_b & 0x04 != 0),
+                (0x0f, bool_b & 0x08 != 0),
+            ];
+            for (id, on) in bits {
+                let _ = settings_tx.send((id, on as u8));
+            }
         }
     }
 
@@ -697,10 +663,27 @@ const CMD_SNAPSHOT_RENAME: u8 = 0x32; // [slot][name]
 const CHANNEL_NAME_MAX: usize = 8; // panel labels are 8 chars
 
 /// One GATT write, capped: this device never completes the D-Bus WriteValue
-/// call — the packet is on air in ~250 ms regardless.
-async fn write_packet(peripheral: &Peripheral, characteristic: &Characteristic, packet: &[u8], opcode: u8) {
-    let write = peripheral.write(characteristic, packet, WriteType::WithoutResponse);
-    match tokio::time::timeout(Duration::from_millis(300), write).await {
+/// call — the packet is on air in ~250 ms regardless. Single-chunk packets
+/// (session + compact commands) go WithResponse: the mixer ignores
+/// single-form writes WithoutResponse (Android's default is acknowledged).
+async fn write_packet(
+    peripheral: &Peripheral,
+    characteristic: &Characteristic,
+    packet: &[u8],
+    opcode: u8,
+    with_response: bool,
+) {
+    let write_type = if with_response {
+        WriteType::WithResponse
+    } else {
+        WriteType::WithoutResponse
+    };
+    let write = peripheral.write(characteristic, packet, write_type);
+    // WithResponse writes sit "In Progress" past 300 ms — dropping the
+    // future cancels them before they go on air (the 0x0E toggle never
+    // landed that way), so give them a real window.
+    let ms = if with_response { 5000 } else { 300 };
+    match tokio::time::timeout(Duration::from_millis(ms), write).await {
         Ok(Ok(_)) => {}
         Ok(Err(e)) => log_debug!("[BLE] cmd 0x{:02X} write error: {}", opcode, e),
         Err(_) => {}
@@ -728,30 +711,48 @@ pub fn send_ble_struct_command(conn: &BleConnection, opcode: u8, payload: &[u8])
 async fn write_struct_command(peripheral: &Peripheral, characteristic: &Characteristic, opcode: u8, payload: &[u8]) {
     static SEQ: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
 
-    // official TX framing (xairbt_out_queue_write_cmd @0xec4e8 — every app
-    // command goes out this way): [chunk_len u16][type][chunk_idx]
-    // [chunk_count][seq] + data, chunk_size = type − 3, seq 0 for a
-    // single-chunk command. The chunk data is the payload DIRECTLY (the
-    // serializer copies the cmd's data area at +24): the zero-padded bare
-    // form buried it and the [type][0x01][data][cksum] single form — accepted
-    // only for the session commands 0x37/0x39/0x07/0x4B — never got a
-    // 0x21/0x41 response in any tested shape.
-    let chunk_size = (opcode as usize).saturating_sub(3).max(1);
-    let count = payload.len().div_ceil(chunk_size);
+    // official on-air TX framing (XairbtOutQueue.readRaw — the ring holds
+    // [len16][type][idx][count][seq]+chunk, but the BLE layer re-frames it
+    // before the write): single chunk → [type][payload][cksum], multi →
+    // [type][count][seq][idx][payload][cksum]; cksum = byte-sum of the
+    // preceding bytes (same additive rule as RX). Chunk capped so one
+    // packet fits MTU 131 (RX notifications are 128 B). The earlier ring
+    // framing landed nothing: the mixer-state GET got 0 notifications and
+    // setting toggles never changed device state.
+    const CHUNK: usize = 122;
+    if payload.is_empty() {
+        // empty body = pure GET: single form [type][count=1][cksum]
+        let p = vec![opcode, 0x01, opcode.wrapping_add(1)];
+        write_packet(peripheral, characteristic, &p, opcode, true).await;
+        return;
+    }
+    let count = payload.len().div_ceil(CHUNK).max(1);
     let seq = if count > 1 {
-        SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        // official seq starts at 0 and is bumped BEFORE the first
+        // multi-chunk group → first group on air has seq 1
+        SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1
     } else {
         0
     };
-    for (idx, chunk) in payload.chunks(chunk_size).enumerate() {
+    for (idx, chunk) in payload.chunks(CHUNK).enumerate() {
         let mut p = Vec::with_capacity(chunk.len() + 6);
-        p.extend_from_slice(&(chunk.len() as u16).to_le_bytes());
         p.push(opcode);
-        p.push(idx as u8);
-        p.push(count as u8);
-        p.push(seq);
+        if count > 1 {
+            p.push(count as u8);
+            p.push(seq);
+            p.push(idx as u8);
+        } else {
+            // single form still carries the count byte: [type][1][payload]
+            // — without it the device reads the first payload byte as the
+            // count and ignores the command (settings writes never landed)
+            p.push(0x01);
+        }
         p.extend_from_slice(chunk);
-        write_packet(peripheral, characteristic, &p, opcode).await;
+        let sum = p.iter().fold(0u8, |a, b| a.wrapping_add(*b));
+        p.push(sum);
+        // single chunks WithResponse (the working session packets are);
+        // multi stays WithoutResponse (the 0x38 SET verified)
+        write_packet(peripheral, characteristic, &p, opcode, count == 1).await;
     }
 }
 
@@ -799,10 +800,10 @@ pub fn send_fx_tempo(conn: &BleConnection, bpm: u16) -> Result<(), String> {
     send_ble_command(conn, 0x40, &[bpm as u8, (bpm >> 8) as u8])
 }
 
-/// Device setting write: Setting (op 0x25), [id][value].
-/// shortcut: packet form unverified on-device; if ignored, try variants.
+/// Device setting write: Setting (op 0x25). The serializer emits the type-8
+/// array as [id u8][count=1][value] — only the id's low byte goes on air.
 pub fn send_setting(conn: &BleConnection, id: u8, value: u8) -> Result<(), String> {
-    send_ble_command(conn, 0x25, &[id, value])
+    send_ble_command(conn, 0x25, &[id, 0x01, value])
 }
 
 /// FX setup block: FxSetup (op 0x11). Official layout (setFxSetup @0xaf270 +
@@ -1192,7 +1193,11 @@ async fn send_meter_poll(peripheral: &Peripheral, characteristic: &Characteristi
     packet.extend_from_slice(&[0x00; 7]);
     let cksum = packet.iter().fold(0u8, |a, b| a.wrapping_add(*b));
     packet.push(cksum);
-    write_packet(peripheral, characteristic, &packet, 0x21).await;
+    // WithoutResponse: a WithResponse poll holds the characteristic up to
+    // 5 s and rejects concurrent writes ("In Progress" — the 0x4B dump
+    // trigger failed that way, killing the fader sync). The device accepts
+    // the poll without response.
+    write_packet(peripheral, characteristic, &packet, 0x21, false).await;
 }
 
 /// Re-fetch the snapshot list from the device. One-shot: opens its own

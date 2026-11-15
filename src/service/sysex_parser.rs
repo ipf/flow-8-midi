@@ -28,10 +28,6 @@ const LIMITER_MAX: f32 = 0.0;
 const LOWCUT_MIN_HZ: u16 = 20;
 const LOWCUT_MAX_HZ: u16 = 600;
 
-const NAMES_START: usize = 0x0554;
-const NAMES_STRIDE: usize = 0x1E;
-const NAME_SCAN_LEN: usize = 14;
-
 struct FloatParam {
     msb_off: usize,
     data_offs: [usize; 4],
@@ -401,7 +397,10 @@ pub fn apply_dump_to_controller(dump: &SysExDump, controller: &mut FLOW8Controll
     log_hex_dump(&dump.raw);
 
     let mut synced = 0usize;
-    apply_channel_names(dump, controller);
+    // channel names: the 0x0554 offsets read mixer-state bytes, not names —
+    // the SysEx dump's name region is unknown and the BLE label frames
+    // (cmd 0x24/0x05) are never pushed in our session. Names stay empty (the
+    // strip shows the rename ✎); renames apply locally via op 0x05.
     synced += apply_channel_levels(dump, controller);
     synced += apply_channel_gains(dump, controller);
     synced += apply_channel_pans(dump, controller);
@@ -423,69 +422,6 @@ pub fn apply_dump_to_controller(dump: &SysExDump, controller: &mut FLOW8Controll
         dump.raw.len(),
         synced
     );
-}
-
-fn restore_sysex_byte(data: &[u8], pos: usize) -> Option<u8> {
-    let group_pos = (pos + 2) % 7;
-    if group_pos == 0 {
-        return None;
-    }
-    if pos < group_pos {
-        return Some(data[pos]);
-    }
-    let msb_off = pos - group_pos;
-    if msb_off >= data.len() {
-        return Some(data[pos]);
-    }
-    let msb = data[msb_off];
-    let bit_index = group_pos - 1;
-    let mut b = data[pos];
-    if msb & (1 << bit_index) != 0 {
-        b |= 0x80;
-    }
-    Some(b)
-}
-
-fn decode_sysex_name(data: &[u8], start: usize) -> String {
-    let end = (start + NAME_SCAN_LEN).min(data.len());
-    let mut restored: Vec<u8> = Vec::new();
-
-    for i in start..end {
-        if let Some(b) = restore_sysex_byte(data, i) {
-            restored.push(b);
-        }
-    }
-
-    let name_start = restored
-        .iter()
-        .position(|&b| b >= 0x20)
-        .unwrap_or(restored.len());
-    let after_start = &restored[name_start..];
-
-    let name_len = after_start
-        .iter()
-        .position(|&b| b == 0x00)
-        .unwrap_or(after_start.len());
-    let raw_bytes = &after_start[..name_len];
-
-    String::from_utf8(raw_bytes.to_vec())
-        .unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned())
-}
-
-fn apply_channel_names(dump: &SysExDump, controller: &mut FLOW8Controller) {
-    let data = &dump.raw;
-    for (i, ch) in controller.channels.iter_mut().enumerate() {
-        let off = NAMES_START + i * NAMES_STRIDE;
-        if off + NAME_SCAN_LEN > data.len() {
-            continue;
-        }
-        let name = decode_sysex_name(data, off);
-        if ch.name != name {
-            log_debug!("[SYSEX] Channel {} name: \"{}\"", i, name);
-        }
-        ch.name = name;
-        ch.name_synced = true;
-    }
 }
 
 fn decode_float(data: &[u8], param: &FloatParam) -> Option<f32> {

@@ -184,28 +184,6 @@ fn start_ble_connection(controller: &mut FLOW8Controller) {
             if let Ok(mut guard) = conn_arc.lock() {
                 *guard = Some(conn.clone());
             }
-
-            // EXPERIMENT: locate device-setting bytes in the SysEx dump.
-            // Toggle two settings over BLE (0x25) and re-dump; the diff
-            // logging in apply_dump_to_controller names the offsets. Values
-            // are restored (both expected to default to 0).
-            std::thread::spawn(move || {
-                use std::time::Duration;
-                std::thread::sleep(Duration::from_millis(2500)); // baseline dump first
-                let _ = ble::send_setting(&conn, 0x03, 1); // footswitch → snapshot
-                std::thread::sleep(Duration::from_millis(600));
-                let _ = ble::send_dump_trigger(&conn);
-                std::thread::sleep(Duration::from_millis(1200));
-                let _ = ble::send_setting(&conn, 0x03, 0); // restore
-                let _ = ble::send_setting(&conn, 0x0E, 1); // main pad on
-                std::thread::sleep(Duration::from_millis(600));
-                let _ = ble::send_dump_trigger(&conn);
-                std::thread::sleep(Duration::from_millis(1200));
-                let _ = ble::send_setting(&conn, 0x0E, 0); // restore
-                std::thread::sleep(Duration::from_millis(600));
-                let _ = ble::send_dump_trigger(&conn);
-                log!("[EXPERIMENT] settings diff sequence done");
-            });
         }
         Err(e) => {
             log_error!("[BLE] Connection failed: {}", e);
@@ -819,7 +797,7 @@ fn update_interface(controller: &mut FLOW8Controller, message: InterfaceMessage)
                 }
             }
 
-            // device settings read back at connect (0x26 probe)
+            // device settings read from the state dump's tail at connect
             if let Some(ref settings_rx) = controller.ble_settings_receiver {
                 while let Ok((id, value)) = settings_rx.try_recv() {
                     log!("[BLE] Setting {:02X} read back: {:02X}", id, value);

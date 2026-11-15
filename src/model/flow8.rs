@@ -122,9 +122,9 @@ pub struct FLOW8Controller {
     pub tap_times: Vec<Instant>,
     pub delete_pending: Option<(usize, Instant)>,
     pub meter_receiver: Option<mpsc::Receiver<MeterMsg>>,
-    /// device-setting values read back over BLE at connect (0x26 probe)
+    /// device-setting values parsed from the state dump's tail at connect
     pub ble_settings_receiver: Option<mpsc::Receiver<(u8, u8)>>,
-    /// last value sent per device setting id (0x01..=0x0f); not read back from device
+    /// active device setting per id (0x01..=0x0f); read at connect, updated on click
     pub ble_settings: [Option<u8>; 128],
     #[cfg(any(debug_assertions, feature = "dev-tools"))]
     pub calibration: CalibrationState,
