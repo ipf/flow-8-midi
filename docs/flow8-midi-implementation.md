@@ -530,7 +530,25 @@ type ver  |  0  channel metering  0     bus   constant   0
 
 **Key finding**: Bytes \[14–16] remain `bf bf bf` even AFTER moving the Main fader to minimum (0x00) via a 0x06 command. This proves they are NOT bus fader positions. They may be a reference level, protocol constant, or metering scale factor.
 
-The 0x22 stream starts ONLY after the phone sends 0x21 context/subscribe commands. Without 0x21, the mixer does not begin streaming.
+The 0x22 stream starts ONLY after the phone sends the 0x21 meter-subscribe command (see [Type 0x21](#type-0x21--meter-subscribe-19-bytes)). Without 0x21, the mixer does not begin streaming.
+
+##### Type 0x08 / 0x01 — Mute/Solo Flag Push (5 bytes) — verified
+
+The mixer mirrors every input-channel mute/solo change as a compact 5-byte notification — the same shape as the TX command. Pushed for changes from ANY source: the panel, USB CC, or our own write, so the app can sync instantly.
+
+```
+[op] 01 [id] [flag] [chk]
+```
+
+* `[0]` = flag op: `08` = mute, `01` = solo.
+* `[1]` = 0x01 (single-chunk count byte).
+* `[2]` = channel id 0..=6 (state-dump order).
+* `[3]` = flag state: 0x00 = off, 0x01 = on.
+* `[4]` = checksum: byte-sum of bytes 0–3.
+
+Verified on device: toggling Ch3 mute + solo off via USB CC produced both pushes within ~0.3 s (`08 01 02 00`, then `01 01 02 00`).
+
+**No push exists for phantom power, back-panel settings, or FX mute** — those sync only via the periodic 0x38 dump (connect / manual / auto sync). Device limitation. Fader moves arrive separately as the 0x06 ChannelMaster push (see [Type 0x06](#type-0x06--parameter-change-6-bytes--confirmed)).
 
 ***
 
@@ -551,6 +569,8 @@ type ver  ch prm val
 | CH | 1 byte | Channel number (1-based) |
 | PP | 1 byte | Parameter ID |
 | VV | 1 byte | Value (0x00 = min, 0xFF = max) |
+
+**Push (RX)**: the mixer also notifies fader moves with this type — `[06 01 [input-id] [output-id] [value] [chk]]` (ChannelMaster push). `input` = 0x00–0x06 channel ids (0x08 bit = stereo flag), 0x0F = Main fader, 0x18/0x19 = Mon 1/2 faders; `output` = 0x0F Main, 0x18/0x19 Mon 1/2 (a channel feeding Mon = its send level). Arrives when our MIDI-driven moves land or a physical fader moves.
 
 **Confirmed parameter: 0x0f = Level (Fader)**
 

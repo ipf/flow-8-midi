@@ -89,6 +89,10 @@ pub enum MeterMsg {
     /// 0x0F = Main fader, 0x18/0x19 = Mon 1/2 faders. output: 0x0F Main,
     /// 0x18 Mon 1, 0x19 Mon 2 (a channel feeding Mon = its send level).
     Fader { input: u8, output: u8, value: u8 },
+    /// Flag push (0x08 mute / 0x01 solo): the mixer mirrors a channel
+    /// mute/solo change from any source (panel, USB CC, our own write).
+    /// id: channel id 0..=6, state: raw flag byte.
+    Flag { op: u8, id: u8, state: u8 },
 }
 
 pub struct FLOW8Controller {

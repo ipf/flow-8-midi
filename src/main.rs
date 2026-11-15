@@ -939,6 +939,23 @@ fn update_interface(controller: &mut FLOW8Controller, message: InterfaceMessage)
                                 }
                             }
                         }
+                        MeterMsg::Flag { op, id, state } => {
+                            // mute (0x08) / solo (0x01) push: the mixer
+                            // mirrors a flag change from any source
+                            // (panel, USB CC, our own write) — apply instantly
+                            let on = state != 0;
+                            if let Some(ch) =
+                                controller.channels.get_mut((id & 0x07) as usize)
+                            {
+                                if op == 0x08 {
+                                    ch.is_muted = on;
+                                    ch.mute_synced = true;
+                                } else {
+                                    ch.is_soloed = on;
+                                    ch.solo_synced = true;
+                                }
+                            }
+                        }
                     }
                 }
             }

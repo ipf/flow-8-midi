@@ -14,6 +14,7 @@ pub mod model {
         pub enum MeterMsg {
             Frame(Vec<f32>, usize, Vec<u8>),
             Fader { input: u8, output: u8, value: u8 },
+            Flag { op: u8, id: u8, state: u8 },
         }
     }
 }

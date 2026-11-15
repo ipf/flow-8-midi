@@ -1152,8 +1152,24 @@ async fn meter_loop(
                         v[4]
                     );
                 }
-            } else if v.len() == 5 && (v[0] == 0x01 || v[0] == 0x08) {
-                // mute/solo state echo from the device — handled locally
+            } else if v.len() == 5
+                && (v[0] == 0x01 || v[0] == 0x08)
+                && v[..4].iter().fold(0u8, |a, b| a.wrapping_add(*b)) == v[4]
+            {
+                // mute (0x08) / solo (0x01) flag push: the mixer mirrors
+                // the change from ANY source (panel, USB CC, our own
+                // write) — [op][count][id][flag][cksum], same shape as TX
+                log_debug!(
+                    "[BLE] Flag push: op=0x{:02X} id=0x{:02X} state=0x{:02X}",
+                    v[0],
+                    v[2],
+                    v[3]
+                );
+                let _ = meter_tx.send(MeterMsg::Flag {
+                    op: v[0],
+                    id: v[2],
+                    state: v[3],
+                });
             } else {
                 // hex-log the first unknowns: anything else that flows
                 // on a live session reveals itself here

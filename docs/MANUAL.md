@@ -202,6 +202,7 @@ Once Bluetooth is connected, the app can:
 
 1. **Read the mixer's current state** — fader positions, EQ settings, sends, FX, mute/solo states, and the device settings (Section 5.1) are fetched and reflected in the UI.
 2. **Display snapshot names** — the names you assigned to your mixer snapshots are shown in the snapshot tiles.
+3. **Mirror mute/solo changes live** — mute and solo toggles made on the mixer's panel (or by any other connected app) appear in the UI within ~0.3 s. Faders and other knobs update on the periodic state dumps (Section 6.3), not instantly.
 
 > **Important:** The FLOW 8 only supports **one Bluetooth connection at a time**. Disconnect the official Behringer app before connecting with this application.
 
