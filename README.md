@@ -96,7 +96,7 @@ This creates a GitHub Release with binaries for Linux, Windows, and macOS attach
 * This application is not official. Any damage (to the unit or any peripherals), misuse or act that avoids warranty is not our responsibility. Use it at your own risk.
 * USB is one-way: the app can send commands, but the mixer does not report its state over USB. Bluetooth adds state sync — a full state dump on connect and on manual/auto sync, plus a continuous meter feed for fader positions. Physical changes on the mixer reflect in the UI through these updates; knobs and other parameters update on dumps, not instantly.
 * On Windows, fetching snapshot names via BLE may fail due to a platform-level BLE subscribe limitation (`"The attribute cannot be written."`). Snapshots still load correctly — only the names are unavailable, so all slots will appear unnamed.
-* Current and future implementations are limited by the [FLOW 8 MIDI implementation](./docs/official%20guide/QSG_BE_0603-AEW_FLOW-8_WW.pdf#page=23) documented in the official quick-start guide.
+* Current and future implementations are limited by the [FLOW 8 MIDI implementation](./docs/flow8-midi-implementation.md) reverse-engineered from the device.
 * An alternative for custom control of this unit is [TouchOSC](https://hexler.net/touchosc) — use what works best for you.
 
 ## Support the Project
