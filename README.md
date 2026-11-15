@@ -34,6 +34,7 @@ No pre-built binaries are published for this fork yet — build from source (see
 
 * **[User Manual](./docs/MANUAL.md)** — Setup, UI pages, BLE sync, and how everything works.
 * **[FAQ — Troubleshooting](./docs/MANUAL.md#7-faq--troubleshooting)** — Common issues with Bluetooth, USB, snapshots, and more.
+* **[Design](./DESIGN.md)** — UI design: pages, strips, controls, styling.
 * **[Developer Manual](./docs/DEV_MANUAL.md)** — Dev-tools, calibration workflow, and CLI tools.
 * **[MIDI Implementation Research](./docs/flow8-midi-implementation.md)** — Protocol reverse-engineering details.
 
