@@ -9,7 +9,7 @@ Made with [Rust](https://www.rust-lang.org/), [iced](https://iced.rs/), [midir](
 ## About
 
 * **Repository**: [github.com/ipf/flow-8-midi](https://github.com/ipf/flow-8-midi) — fork of [abelroes/flow-8-midi](https://github.com/abelroes/flow-8-midi)
-* **Author**: Ingo Pfennigstorf — current maintainer of the fork; original by [Abel Rocha Espinosa](https://github.com/abelroes)
+* **Author**: ipf — current maintainer of the fork; original by [Abel Rocha Espinosa](https://github.com/abelroes)
 
 ## Download
 

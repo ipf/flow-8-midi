@@ -229,7 +229,7 @@ fn build_about_section() -> Element<'static, InterfaceMessage> {
     )
     .size(11);
 
-    let author = text("Author: Ingo Pfennigstorf").size(11);
+    let author = text("Author: ipf").size(11);
     let original = text("Original: Abel Rocha Espinosa").size(11);
     let license = text("License: GNU GPLv3").size(11);
     let repo_row = row![

@@ -274,7 +274,7 @@ A: Tap Tempo only affects **delay/echo presets**. If the FX slot is set to a Fla
 ***
 
 *FLOW 8 MIDI Controller is free software licensed under [GNU GPLv3](../LICENSE).*
-*Author: Ingo Pfennigstorf — [github.com/ipf/flow-8-midi](https://github.com/ipf/flow-8-midi). Original by Abel Rocha Espinosa — [github.com/abelroes](https://github.com/abelroes).*
+*Author: ipf — [github.com/ipf/flow-8-midi](https://github.com/ipf/flow-8-midi). Original by Abel Rocha Espinosa — [github.com/abelroes](https://github.com/abelroes).*
 
 ***
 
