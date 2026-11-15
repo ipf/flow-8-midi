@@ -57,6 +57,9 @@ const PREFERRED_HEIGHT: f32 = 700.0;
 const MIN_WIDTH: f32 = 800.0;
 const MIN_HEIGHT: f32 = 500.0;
 static ICON: &[u8] = include_bytes!("../resources/icon.ico");
+// DSEG7 7-segment font for the TAP tempo readout (OFL, see
+// assets/fonts/LICENSE-DSEG.txt)
+static FONT_DSEG: &[u8] = include_bytes!("../assets/fonts/DSEG7Classic-Bold.ttf");
 
 fn initial_window_size() -> Size {
     let (max_w, max_h) = screen_size_override().unwrap_or_else(available_screen_size);
@@ -109,7 +112,7 @@ fn available_screen_size() -> (f32, f32) {
     (PREFERRED_WIDTH, PREFERRED_HEIGHT)
 }
 
-fn boot() -> FLOW8Controller {
+fn boot() -> (FLOW8Controller, iced::Task<InterfaceMessage>) {
     logger::init();
     let mut controller = FLOW8Controller::new();
 
@@ -122,7 +125,9 @@ fn boot() -> FLOW8Controller {
     }
 
     try_connect_flow8(&mut controller);
-    controller
+    // iced 0.14's application().font() never registers its bytes (dead
+    // settings.fonts field) — fonts must load via the task API
+    (controller, iced::font::load(FONT_DSEG).discard())
 }
 
 fn theme(state: &FLOW8Controller) -> Theme {

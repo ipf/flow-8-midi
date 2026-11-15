@@ -39,15 +39,19 @@ pub fn build_mute_btn(fx_muted: bool) -> Element<'static, InterfaceMessage> {
 }
 
 pub fn build_tap_tempo_btn(bpm: Option<u16>) -> Element<'static, InterfaceMessage> {
-    // oldschool LED readout above the button: red digits on a dark panel
+    // oldschool 7-segment readout above the button: red digits on a dark
+    // panel (bundled DSEG7 font)
     let digits = bpm
         .map(|b| format!("{:03}", b))
         .unwrap_or_else(|| "---".to_string());
     let display = container(
         text(digits)
             .size(15)
+            .font(iced::Font::with_name("DSEG7 Classic"))
             .color(iced::Color::from_rgb(1.0, 0.12, 0.08)),
     )
+    // fixed width: '---' and '120' occupy the same box
+    .center_x(Length::Fixed(64.0))
     .padding([2, 10])
     .style(|_| container::Style {
         background: Some(iced::Background::Color(iced::Color::from_rgb(

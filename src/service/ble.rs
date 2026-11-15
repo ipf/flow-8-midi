@@ -312,9 +312,6 @@ async fn connect_and_auth(
                 continue;
             }
         }
-
-        log!("[BLE] Authenticated and session started");
-        return Ok((characteristic, stream));
     }
 
     Err(last_err)

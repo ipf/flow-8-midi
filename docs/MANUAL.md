@@ -132,7 +132,7 @@ FX 1 and FX 2 are the last two strips. Each contains:
 | **Preset** | Dropdown | Selects the FX algorithm. |
 | **Param 1** | Knob | Labeled dynamically per preset (e.g., "Decay" for reverbs, "Feedback" for delays) |
 | **Param 2** | Toggle (A/B) | Labeled dynamically per preset (e.g., "Instrument/Vocal", "Dull/Bright", "Mono/Stereo") |
-| **TAP** | Tap tempo button (FX 1 strip only) | Tap repeatedly to set the FX tempo; affects delay/echo presets. |
+| **TAP** | Tap tempo button with 7-segment readout (FX 1 strip only) | Tap repeatedly to set the FX tempo; affects delay/echo presets. |
 | **Main / Mon1 / Mon2** | Routing checkboxes (one row) | Where the FX return is routed. |
 | **Level** | Fader | The FX bus return level. |
 
