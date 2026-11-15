@@ -442,7 +442,8 @@ flow-8-midi/
 │   ├── bin/
 │   │   ├── calibrate.rs              # CLI calibration binary
 │   │   ├── digest.rs                 # CLI digest binary
-│   │   └── analyze_names.rs          # Channel name encoding validator
+│   │   ├── analyze_names.rs          # Channel name encoding validator
+│   │   └── test_cm.rs                # ChannelMaster (0x06) probe
 │   ├── model/
 │   │   ├── mod.rs
 │   │   ├── flow8.rs                  # Main application state (FLOW8Controller)
@@ -451,7 +452,7 @@ flow-8-midi/
 │   │   └── page.rs                  # Page navigation enum
 │   ├── service/
 │   │   ├── mod.rs
-│   │   ├── ble.rs                   # BLE connection, auth, dump trigger, snapshot fetch
+│   │   ├── ble.rs                   # BLE connect/auth/session, command TX, meter loop, dB tables
 │   │   ├── midi.rs                  # Raw MIDI send (CC, PC, NoteOn)
 │   │   ├── midi_mapper.rs           # Maps InterfaceMessage → MIDI commands
 │   │   ├── sysex_parser.rs          # SysEx dump parser (uses extracted offset tables)
@@ -459,14 +460,14 @@ flow-8-midi/
 │   └── view/
 │       ├── mod.rs
 │       ├── widgets.rs               # Reusable widgets (sliders, tooltips) + value formatters
+│       ├── fx_widgets.rs            # FX strip widgets (preset/param, DSEG7 TAP readout)
 │       ├── device_select_page.rs    # Device selection / error screen
 │       ├── nav_bar.rs               # Navigation bar (tabs, sync status, BLE indicator)
-│       ├── mixer_page.rs            # Mixer page (channel strips, bus strips)
-│       ├── eq_page.rs               # EQ page (4-band channel EQ, 9-band bus EQ)
-│       ├── sends_page.rs            # Sends page (monitor + FX send levels)
-│       ├── fx_page.rs               # FX page (FX1/FX2 presets, params, mute, tap tempo)
-│       ├── snapshots_page.rs        # Snapshots page (load/reset)
-│       └── settings_page.rs         # Settings page (about, theme, sync interval, debug log)
+│       ├── mixer_page.rs            # Mixer page (channel strips, bus + FX strips)
+│       ├── snapshots_page.rs        # Snapshots page (load, save, rename, delete)
+│       ├── settings_page.rs         # Settings page (device settings, snapshots, appearance)
+│       ├── manual_page.rs           # In-app manual (renders docs/MANUAL.md)
+│       └── about_page.rs            # About page (app info, manual, debug log tools)
 ├── docs/
 │   ├── MANUAL.md                    # User manual
 │   ├── DEV_MANUAL.md                # This document

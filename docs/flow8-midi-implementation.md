@@ -244,18 +244,17 @@ The encoding mode cycles: **mod0 → mod1 → mod2 → mod0 → ...**
 
 Each channel's parameter block contains Level, Pan, Gain, EQ (4 bands), Compressor, Low Cut, Sends, Mute, Solo, and Phantom Power — all as 5-byte packed floats. The SysEx parser (`src/service/sysex_parser.rs`) decodes all known parameters from the dump.
 
-#### 2.3.4 Channel Names Region (0x0550+)
+#### 2.3.4 Channel Names Region (0x0550+) — RETRACTED
 
-Channel names are stored as 7-bit ASCII (no MSB packing needed since ASCII is inherently < 0x80). Observed names from a live dump:
+These offsets read **mixer-state bytes, not names**. The ASCII-looking
+data observed there ("Samson", "Saxophone", …) was coincidental: a dump
+from a mixer with different settings produces different bytes at the same
+offsets. The app's channel-name parser was removed.
 
-| Approx. Offset | Name | Channel |
-|----------------|------|---------|
-| 0x0554 | "Samson" / "CS1" | Ch1 (XLR) |
-| 0x0572 | "Saxophone" | Ch2 (XLR) |
-| 0x0590 | "FM3 Left" | Ch3 (Combo) |
-| 0x05AF | "FM3 Right" | Ch4 (Combo) |
-| 0x05CC | "Synth" | Ch5/6 (Stereo) |
-| 0x05E8 | "Karaoke" | Ch7/8 (USB/BT) |
+Channel names are **write-only**. They are set via op 0x05 (see the
+command catalog), but no dump region or query returns them — renames are
+never echoed back and do not appear in the 0x38 dump. Snapshot names are
+the exception: they come back in the 0x27 response.
 
 #### 2.3.5 Parameter Data Region — Default Pattern
 
@@ -325,13 +324,40 @@ The auth is **one-way**: the phone authenticates TO the mixer, not the other way
 
 ### 3.3 Packet Format — Checksum Discovery
 
-**All packets share a common framing structure:**
+**All packets share a common framing structure.**
+
+Single-chunk (session + all compact commands):
 
 ```
 [type:1] [0x01:1] [payload:N] [checksum:1]
 ```
 
+Multi-chunk (large payloads, e.g. the 0x38 SET and struct commands):
+
+```
+[type:1] [count:1] [seq:1] [idx:1] [payload:N] [checksum:1]
+```
+
+`count` = total chunks in the group, `seq` = incrementing group number
+(first group on air has seq 1), `idx` = 0-based chunk index. Without the
+count byte in the single form the device reads the first payload byte as
+the count and ignores the command.
+
 **Checksum algorithm**: The last byte of every packet is the **sum of all preceding value bytes, modulo 256**.
+
+**Transport (verified on device):**
+
+* Single-chunk writes go **WithResponse** — the mixer ignores single-form
+  writes WithoutResponse (Android's default is acknowledged writes). Give
+  them a 5 s window: writes cancelled before ~300 ms never go on air.
+* Multi-chunk writes go **WithoutResponse** (verified with the 0x38 SET).
+* A WithResponse write holds the characteristic up to 5 s and rejects
+  concurrent writes ("In Progress") — interleaving a WithResponse meter
+  poll with a 0x4B dump trigger kills the dump trigger.
+* The device never completes the D-Bus WriteValue call: packets are on
+  air in ~250 ms regardless, so callers cap the write wait.
+* Empty-body single form `[type][0x01][cksum]` = a pure GET — the device
+  ignores these (see 0x26).
 
 **Verification (all confirmed):**
 
@@ -398,29 +424,38 @@ Zero payload. Always identical. Confirms auth success.
 Sent immediately after the 0x37 session start. Contains complete mixer configuration.
 
 ```
-38 04 02 PP [channel data...]
-^^^^ ^^ ^^ ^^
-type ?  ?  part
+38 04 seq idx [payload...] [chk]
+^^^^ ^^^^ ^^^ ^^^
+type cnt seq part
 ```
 
-Delivered in 4 large chunks (using the full 131-byte MTU). Contains per-channel data including:
+Multi-chunk framing is `[type][count][seq][idx][payload][cksum]`: `count`
+= total chunks in the group, `seq` = incrementing group number (the
+official app bumps it before the first group, so the first group on air
+has seq 1), `idx` = 0-based chunk index, checksum = additive byte-sum of
+all preceding bytes. Delivered in 4 large chunks (using the full 131-byte
+MTU). Contains per-channel data including:
 
 * Channel index (0-based: 0x00–0x0d)
-* Channel name (length-prefixed UTF-8 string)
 * Fader position, EQ settings, sends, routing
 * FX parameters, bus configuration
 
-**Observed channel names from dump:**
+Channel names are NOT in the dump — names are write-only (see §2.3.4).
 
-| Index | Name | Physical Input |
-|-------|------|---------------|
-| 0x00 | "Samson CS1" | Ch1 (XLR) |
-| 0x01 | "Saxophone" | Ch2 (XLR) |
-| 0x02 | "FM3 Left" | Ch3 (Combo) |
-| 0x03 | "FM3 Right" | Ch4 (Combo) |
-| 0x04 | "Synth" | Ch5/6 (Stereo Line) |
-| 0x05 | "Karaokê" | Ch7/8 (USB/BT) |
-| 0x06+ | (bus config) | Main, Mon1, Mon2, FX |
+**Settings read-back (dump tail):** the last 9 bytes of the final chunk
+carry the back-panel device settings:
+
+| Tail byte | Content |
+|-----------|---------|
+| [0] | Phones (HP) source byte |
+| [1] | boolA — packed setting booleans |
+| [2] | boolB — packed setting booleans |
+| [3..9] | unparsed |
+
+boolA bits: 0=0x01, 1=0x02, 2=0x03, 3=mute (no settings row), 4=0x07,
+5=0x09, 6=0x0a, 7=0x0b. boolB bits: 0=0x0c, 1=0x0d, 2=0x0e (Main pad),
+3=0x0f. The Mon 1/2 source (0x08) is a routing byte NOT in the packed
+bools — it keeps the last value sent.
 
 State dump values change between connections to reflect current mixer state (e.g., fader positions moved between sessions are reflected in the dump).
 
@@ -445,17 +480,22 @@ Sent in response to a 0x07 request. Contains names of all snapshot/preset slots.
 
 Names are length-prefixed UTF-8 strings. Empty slots have length 0.
 
-##### Type 0x25 — Parameter Query Response (variable length)
+##### Type 0x25 — Settings Write / Query Response
 
-Response to a 0x26 parameter query.
+**Write direction (verified on device):** each back-panel setting is
+written as the compact single-chunk form
 
 ```
-25 01 PARAM LEN [data...] [chk]
-^^^^ ^^^^ ^^^^^ ^^^
-type ver  param len
+25 01 [id] [value] [chk]
 ```
 
-**Observed parameter responses:**
+i.e. `[type][count=1][id u8][value]` with the additive checksum. Verified
+both ways: the write changes device state AND the new value shows up in
+the 0x38 dump tail (see above).
+
+**Query responses (research captures only):** the packets below were
+responses to 0x26 queries during the original captures — the current app
+never queries, because the device ignores empty GETs (see 0x26).
 
 | Param | Len | Data | Meaning |
 |-------|-----|------|---------|
@@ -581,24 +621,35 @@ Zero payload. Sent after auth ack. Triggers the 0x38 full state dump from the mi
 
 Zero payload. Sent after receiving the 0x38 state dump. Triggers the 0x27 snapshot names response.
 
-##### Type 0x21 — Context / Subscribe Command (19 bytes)
+##### Type 0x21 — Meter Subscribe (19 bytes)
 
-Sent to start the state stream and establish the monitoring context.
+Starts the 0x22 meter stream — the mixer does NOT stream until it accepts
+at least one 0x21. MUST go out as the RAW SINGLE FORM
+`[type][0x01][payload][byte-sum]`, NOT the queued-chunk framing:
+14 min of raw-form polls kept the device streaming into the NEXT connect
+(89 × 0x22 frames in its handshake phase); queued-form polls produced zero.
 
 ```
-21 01 08 40 41 42 43 c4 c5 c6 cf 00 00 XX XX 00 00 XX [chk]
-^^^^ ^^^^ ^^ ^^^^^^^^^^^^^^^^^^^^^^^^^ ^^^^^ ^^^^^^^^^ ^^^
-type ver  N  8 constant address bytes   pad   variable   chk
+21 01 08 40 41 42 43 c4 c5 c6 [out] 00 00 00 00 00 00 00 [chk]
+^^^^ ^^^^ ^^ ^^^^^^^^^^^^^^^ ^^^^^ ^^^^^^^^^^^^^^^^^^^^^ ^^^
+type ver  N  7 input ids      out   zeros                chk
 ```
 
-* Bytes 3–10: `40 41 42 43 c4 c5 c6 cf` — constant across all sessions. Likely channel/parameter address map.
-* Bytes 11–17: Variable portion changes between invocations. May represent current app viewport or subscription filter.
-* **Triggers the 0x22 state stream** — the mixer does NOT send 0x22 notifications until it receives at least one 0x21 command.
-* The mixer echoes each 0x21 back as a Notification (acknowledgment).
+* `[2]` = 0x08 — field-table count byte.
+* `[3..10]` = the 7 input channel ids: `40 41 42 43 c4 c5 c6` (Ch 1–6, USB/BT).
+* `[10]` = selected output id: `channelId | 0x40 | 0x80` — Main 0x0F→0xCF,
+  Mon 1 0x0A→0xCA, Mon 2 0x0B→0xCB, FX 1 0x0C→0xCC, FX 2 0x0D→0xCD
+  (0xD8/0xD9 are dead ids — meters always read −144). Payload indices 10/11
+  carry the SELECTED output's L/R; the poll rotates through the outputs to
+  meter them all.
+* `[11..18]` = 7 zero bytes.
 
-##### Type 0x26 — Parameter Query (4 bytes)
+Must stay **WithoutResponse**: a WithResponse poll holds the
+characteristic up to 5 s and rejects concurrent writes (the 0x4B dump
+trigger failed that way, killing fader sync). The device paces exactly one
+0x22 frame per accepted poll (~410 ms apart) — poll↔frame stay 1:1.
 
-**Correction**: Previously identified as "parameter change" — it is actually a **query/read** command.
+##### Type 0x26 — Parameter Query (4 bytes) — DEAD
 
 ```
 26 01 PP [chk]
@@ -606,15 +657,10 @@ type ver  N  8 constant address bytes   pad   variable   chk
 type ver  param
 ```
 
-Sends a query for parameter PP. The mixer responds with a 0x25 notification containing the data.
-
-**Observed queries:**
-
-| PP byte | Response contains |
-|---------|------------------|
-| 0x05 | Device name ("Abel's Flow 8") |
-| 0x80 | Channel/EQ configuration (48 bytes) |
-| 0xb0 | Unknown flag (1 byte: 0x00) |
+The device ignores empty GETs: the queued-form mixer-state query produced
+zero notifications. Read-back happens via the 0x38 dump instead (settings
+ride the dump tail). The 0x25 responses in the research captures predate
+this finding.
 
 ##### Type 0x4B — Dump Trigger (3 bytes) — CONFIRMED
 
@@ -623,6 +669,61 @@ Sends a query for parameter PP. The mixer responds with a 0x25 notification cont
 ```
 
 Zero payload. Triggers a full SysEx dump. The dump is emitted on BOTH the BLE connection AND the USB MIDI output port.
+
+##### Type 0x05 — Channel Label / Rename (compact) — verified
+
+```
+05 01 [uid] [icon:2] [name ≤8 ascii] [chk]
+```
+
+`uid` = channel id 0..=6 (state-dump order), icon = 0x0000, name = up to
+8 ASCII chars (panel-label length). Verified on device: the rename lands,
+is never echoed back, and names are not readable from any dump (§2.3.4).
+
+##### Type 0x08 — Channel Mute (struct)
+
+```
+08 01 [id] [flag] [chk]
+```
+
+Works on input channels AND on the FX buses.
+
+##### Type 0x11 — FX Setup (struct, official layout)
+
+```
+11 ... [fx_id] [p1] [p2] [p3] [to_main] [to_mon1] [to_mon2] ...
+```
+
+Fields land at cmd[24..30] (the writer prepends the struct pad). Used for
+the routing checkboxes AND single FX parameter changes — the official
+app's updateFXPresetValue builds the same block.
+
+##### Type 0x19 — Snapshot Save (compact) — verified
+
+```
+19 01 [slot] [name...] [chk]
+```
+
+Saves the current mixer state into the device snapshot slot.
+
+##### Type 0x31 — FX Preset Load (struct)
+
+```
+31 ... [fx_id] [preset] ...
+```
+
+`preset` is 1-based on the wire (the dump reports preset_raw 1..=16).
+
+##### Type 0x32 — Snapshot Rename (compact)
+
+```
+32 01 [slot] [name...] [chk]
+```
+
+**Also used by the app:** 0x12 Snapshot Delete `[slot]`, 0x20 Snapshot
+Load `[slot]` (works even when the USB Program-Change path is wedged),
+0x40 FX tempo `[u16 bpm LE]` (official app sends a 5-tap rolling average),
+0x17 input preset, 0x41 select output.
 
 ### 3.5 Complete Session Timeline (Capture 4 — Controlled Test)
 
