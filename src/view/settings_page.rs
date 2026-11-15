@@ -16,8 +16,15 @@ pub fn view_settings(controller: &FLOW8Controller) -> Element<'_, InterfaceMessa
     let appearance_section = build_appearance_section(controller);
     let device_section = build_device_section(controller);
 
-    // device settings (two card columns) and snapshots side by side,
-    // each half of the width
+    // device settings card on the left; snapshots + UI settings stacked on
+    // the right
+    let right_column = column![
+        snapshots_section(controller),
+        Space::new().height(12),
+        appearance_section,
+    ]
+    .width(Fill);
+
     let content = column![
         title,
         Space::new().height(12),
@@ -25,12 +32,10 @@ pub fn view_settings(controller: &FLOW8Controller) -> Element<'_, InterfaceMessa
             container(device_section)
                 .width(Length::FillPortion(1)),
             Space::new().width(8),
-            container(snapshots_section(controller))
+            container(right_column)
                 .width(Length::FillPortion(1)),
         ]
         .width(Fill),
-        Space::new().height(16),
-        appearance_section,
         Space::new().height(12),
     ]
     .width(Fill)

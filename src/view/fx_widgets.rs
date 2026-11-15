@@ -9,7 +9,7 @@ use crate::model::{
 use crate::view::widgets::{format_percent, knob, sync_label};
 use iced::{
     widget::{button, checkbox, column, container, pick_list, text, tooltip},
-    Center, Element, Fill,
+    Center, Element, Fill, Length,
 };
 
 const MUTE_COLOR: iced::Color = iced::Color {
@@ -39,18 +39,35 @@ pub fn build_mute_btn(fx_muted: bool) -> Element<'static, InterfaceMessage> {
 }
 
 pub fn build_tap_tempo_btn(bpm: Option<u16>) -> Element<'static, InterfaceMessage> {
-    let label = match bpm {
-        Some(b) => format!("TAP {}", b),
-        None => "TAP".to_string(),
-    };
+    // oldschool LED readout above the button: red digits on a dark panel
+    let digits = bpm
+        .map(|b| format!("{:03}", b))
+        .unwrap_or_else(|| "---".to_string());
+    let display = container(
+        text(digits)
+            .size(15)
+            .color(iced::Color::from_rgb(1.0, 0.12, 0.08)),
+    )
+    .padding([2, 10])
+    .style(|_| container::Style {
+        background: Some(iced::Background::Color(iced::Color::from_rgb(
+            0.06, 0.02, 0.02,
+        ))),
+        border: iced::Border {
+            radius: 3.0.into(),
+            ..Default::default()
+        },
+        ..container::Style::default()
+    });
+
     // same snug geometry as the 48V button — it lives in that slot
-    let tap_btn = button(text(label).size(11).center())
+    let tap_btn = button(text("TAP").size(11).center())
         .on_press(InterfaceMessage::TapTempo)
         .padding([3, 10])
         .style(button::secondary);
 
     tooltip(
-        tap_btn,
+        column![display, tap_btn].align_x(Center).spacing(3),
         container(text("Tap repeatedly to set FX2 tempo (5-tap average).\nOnly works with delay/echo presets (1-12).").size(10))
             .padding(6)
             .style(container::rounded_box),
@@ -159,10 +176,19 @@ pub fn build_route_checkbox<'a>(
         1 => (mon1, (main, !mon1, mon2)),
         _ => (mon2, (main, mon1, !mon2)),
     };
-    checkbox::Checkbox::new(checked)
-        .label(label)
-        .on_toggle(move |_| InterfaceMessage::FxRouting(fx_id, routing.0, routing.1, routing.2))
-        .text_size(9)
-        .spacing(2)
-        .into()
+    // label above the checkbox, same footprint as a knob_slot (label +
+    // 28 px control) so the routing band lines up with the pan/limiter knobs
+    column![
+        text(label).size(9),
+        container(
+            checkbox::Checkbox::new(checked).on_toggle(move |_| {
+                InterfaceMessage::FxRouting(fx_id, routing.0, routing.1, routing.2)
+            })
+        )
+        .height(Length::Fixed(28.0))
+        .align_y(Center),
+    ]
+    .align_x(Center)
+    .spacing(1)
+    .into()
 }

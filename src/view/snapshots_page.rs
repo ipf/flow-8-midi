@@ -4,7 +4,7 @@ use crate::model::{
 };
 use iced::{
     widget::{button, column, container, row, text, text_input, Space},
-    Center, Element, Fill,
+    Center, Element, Fill, Length,
 };
 const GRID_COLS: usize = 5;
 
@@ -12,13 +12,6 @@ const EMPTY_NUM_COLOR: iced::Color = iced::Color {
     r: 0.45,
     g: 0.45,
     b: 0.45,
-    a: 1.0,
-};
-
-const DATE_COLOR: iced::Color = iced::Color {
-    r: 0.55,
-    g: 0.55,
-    b: 0.55,
     a: 1.0,
 };
 
@@ -49,7 +42,6 @@ pub fn snapshots_section(controller: &FLOW8Controller) -> Element<'_, InterfaceM
                 .snapshot_names
                 .get(i)
                 .and_then(|n| n.as_ref());
-            let save_date = controller.snapshot_dates.get(i).and_then(|d| d.as_ref());
 
             let has_name = name.is_some();
 
@@ -57,40 +49,34 @@ pub fn snapshots_section(controller: &FLOW8Controller) -> Element<'_, InterfaceM
             let editing_save = controller.rename_target == Some(RenameTarget::SnapshotSave(i));
             let editing = editing_rename || editing_save;
 
+            // compact card: number + name (click loads); ✎ Save Del under it
             let btn_content = match name {
                 Some(n) => column![
                     text(format!("{:02}", snapshot_num))
-                        .size(14)
+                        .size(12)
                         .align_x(Center)
                         .color(AVAILABLE_NUM_COLOR),
                     text(n.as_str())
-                        .size(12)
+                        .size(10)
                         .align_x(Center)
                         .color(AVAILABLE_NAME_COLOR),
-                    text(save_date.map(String::as_str).unwrap_or(""))
-                        .size(9)
-                        .align_x(Center)
-                        .color(DATE_COLOR),
                 ]
                 .align_x(Center)
-                .spacing(3),
+                .spacing(1),
                 None => column![
                     text(format!("{:02}", snapshot_num))
-                        .size(14)
+                        .size(12)
                         .align_x(Center)
                         .color(EMPTY_NUM_COLOR),
-                    text(save_date.map(String::as_str).unwrap_or(""))
-                        .size(9)
-                        .align_x(Center)
-                        .color(DATE_COLOR),
                 ]
                 .align_x(Center)
-                .spacing(3),
+                .spacing(1),
             };
 
             let btn = button(btn_content)
                 .on_press(InterfaceMessage::LoadSnapshot(i as u8))
-                .padding([8, 8])
+                .padding([4, 6])
+                .height(Length::Fixed(40.0))
                 .width(Fill)
                 .style(if has_name { button::primary } else { button::secondary });
 
@@ -125,36 +111,37 @@ pub fn snapshots_section(controller: &FLOW8Controller) -> Element<'_, InterfaceM
                 .into()
             } else {
                 // rename is a no-op on an empty slot (nothing to rename):
-                // disabled until the slot holds a snapshot
+                // disabled until the slot holds a snapshot. ✎ matches the
+                // channel strips' rename affordance.
                 let rename_btn = if has_name {
-                    button(text("Rename").size(10))
+                    button(text("\u{270E}").size(10))
                         .on_press(InterfaceMessage::RenameStartSnapshot(i))
-                        .padding([3, 10])
+                        .padding([2, 8])
                         .style(button::secondary)
                 } else {
-                    button(text("Rename").size(10))
-                        .padding([3, 10])
+                    button(text("\u{270E}").size(10))
+                        .padding([2, 8])
                         .style(button::secondary)
                 };
                 row![
                     rename_btn,
-                    button(text("Save over").size(10))
+                    button(text("Save").size(10))
                         .on_press(InterfaceMessage::SnapshotSaveStart(i))
-                        .padding([3, 10])
+                        .padding([2, 8])
                         .style(button::secondary),
-                    button(if delete_pending { text("\u{26A0} again!").size(10) } else { text("Delete").size(10) })
+                    button(if delete_pending { text("\u{26A0} again").size(10) } else { text("Del").size(10) })
                         .on_press(InterfaceMessage::DeleteSnapshot(i))
-                        .padding([3, 10])
+                        .padding([2, 8])
                         .style(if delete_pending { button::danger } else { button::secondary }),
                 ]
-                .spacing(4)
+                .spacing(3)
                 .into()
             };
 
             row_items.push(
                 column![btn, below]
                     .align_x(Center)
-                    .spacing(4)
+                    .spacing(3)
                     .width(Fill)
                     .into(),
             );

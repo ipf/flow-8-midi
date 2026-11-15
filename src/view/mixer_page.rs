@@ -543,21 +543,9 @@ fn build_bus_strip<'a>(
                 f.param2_synced,
             ));
             if fx_idx == 0 {
-                // TAP sits between the param2 dropdown and the routing
+                // TAP sits at the bottom of the FX controls
                 col = col.push(build_tap_tempo_btn(controller.current_tap_bpm()));
             }
-            col = col.push(
-                // routing stacked vertically: reads cleaner than a
-                // horizontal row in a narrow strip; the unsynced dot
-                // shows until an FXSetup (any param/routing touch) put
-                // the routing on the device
-                column![
-                    row![sync_dot(f.route_synced), build_route_checkbox(f, 0, "Main")],
-                    row![sync_dot(f.route_synced), build_route_checkbox(f, 1, "Mon1")],
-                    row![sync_dot(f.route_synced), build_route_checkbox(f, 2, "Mon2")],
-                ]
-                .spacing(2),
-            );
         }
     } else if bus.has_nine_band_eq() {
         let eq = &bus.nine_band_eq;
@@ -596,7 +584,8 @@ fn build_bus_strip<'a>(
 
     // pan/limiter band, one row on every strip: Main shares Pan +
     // Limiter, the monitors keep Limiter — same slot as the channels'
-    // Pan so all bands align across the mixer. FX strips skip it.
+    // Pan so all bands align across the mixer. FX strips host the
+    // routing checkboxes in the same slot.
     if bus.bus_type != BusType::Fx {
         if bus.has_balance() {
             let mut band = row![knob_slot(
@@ -632,6 +621,16 @@ fn build_bus_strip<'a>(
                 format_limiter(bus.bus_strip.limiter),
             ));
         }
+    } else if let Some(f) = controller.fx_slots.get((bus.index - 3) as usize) {
+        col = col.push(
+            row![
+                sync_dot(f.route_synced),
+                build_route_checkbox(f, 0, "Main"),
+                build_route_checkbox(f, 1, "Mon1"),
+                build_route_checkbox(f, 2, "Mon2"),
+            ]
+            .spacing(4),
+        );
     }
 
     col = col.push(

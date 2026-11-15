@@ -359,6 +359,7 @@ fn view(controller: &FLOW8Controller) -> Element<'_, InterfaceMessage> {
         Page::Mixer => view_mixer(controller),
         Page::Settings => view_settings(controller),
         Page::About => crate::view::about_page::view_about(controller),
+        Page::Manual => crate::view::manual_page::view_manual(controller),
         Page::DeviceSelect => unreachable!(),
     };
 
@@ -1061,15 +1062,6 @@ fn update_interface(controller: &mut FLOW8Controller, message: InterfaceMessage)
                     ch.name_synced = true;
                 }
             }
-            if let RenameTarget::SnapshotSave(slot) = target {
-                // note when this slot was saved (display only; the device
-                // does not report save dates)
-                let slot = slot as usize;
-                if slot < controller.snapshot_dates.len() {
-                    controller.snapshot_dates[slot] =
-                        Some(chrono::Local::now().format("%d.%m.%Y %H:%M").to_string());
-                }
-            }
 
             // snapshot ops get a fresh names channel the Tick loop consumes
             let (snap_tx, snap_rx) = std::sync::mpsc::channel();
@@ -1125,7 +1117,7 @@ fn update_interface(controller: &mut FLOW8Controller, message: InterfaceMessage)
             log!("[APP] Sync interval changed to {}", interval);
         }
         InterfaceMessage::OpenManual => {
-            open_url("https://github.com/abelroes/flow-8-midi/blob/main/docs/MANUAL.md");
+            controller.current_page = crate::model::page::Page::Manual;
         }
         InterfaceMessage::OpenRepository => {
             open_url("https://github.com/abelroes/flow-8-midi");
