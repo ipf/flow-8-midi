@@ -13,20 +13,20 @@ const MIN_DUMP_SIZE: usize = 100;
 
 const LEVEL_DB_MIN: f32 = -70.0;
 const LEVEL_DB_MAX: f32 = 10.0;
-const GAIN_MIN: f32 = -20.0;
-const GAIN_MAX: f32 = 60.0;
-const EQ_MIN: f32 = -15.0;
-const EQ_MAX: f32 = 15.0;
+pub const GAIN_MIN: f32 = -20.0;
+pub const GAIN_MAX: f32 = 60.0;
+pub const EQ_MIN: f32 = -15.0;
+pub const EQ_MAX: f32 = 15.0;
 const PAN_MIN: f32 = -1.0;
 const PAN_MAX: f32 = 1.0;
 const COMP_MIN: f32 = 0.0;
 const COMP_MAX: f32 = 1.0;
 const BAL_MIN: f32 = -1.0;
 const BAL_MAX: f32 = 1.0;
-const LIMITER_MIN: f32 = -30.0;
-const LIMITER_MAX: f32 = 0.0;
-const LOWCUT_MIN_HZ: u16 = 20;
-const LOWCUT_MAX_HZ: u16 = 600;
+pub const LIMITER_MIN: f32 = -30.0;
+pub const LIMITER_MAX: f32 = 0.0;
+pub const LOWCUT_MIN_HZ: u16 = 20;
+pub const LOWCUT_MAX_HZ: u16 = 600;
 
 struct FloatParam {
     msb_off: usize,

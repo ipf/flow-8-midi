@@ -1007,6 +1007,131 @@ pub fn send_channel_mute(conn: &BleConnection, id: u8, muted: bool) -> Result<()
     send_ble_struct_command(conn, 0x08, &[id, muted as u8])
 }
 
+// ── Knob sends on their native ops (works BLE-only; USB CC is the fallback) ──
+// Payloads are the wire bytes of the official serializer's field tables
+// (CMD_FT): single bytes for scalar params, 16-bit freq fields BIG-endian
+// on the wire (serializer type 4 writes hi byte first).
+// UI CC scales (must match sysex_parser's decoders; duplicated here because
+// the test_cm bin stub compiles ble.rs without sysex_parser):
+const GAIN_MIN: f32 = -20.0;
+const GAIN_MAX: f32 = 60.0;
+const EQ_MIN: f32 = -15.0;
+const EQ_MAX: f32 = 15.0;
+const LIMITER_MIN: f32 = -30.0;
+const LIMITER_MAX: f32 = 0.0;
+const LOWCUT_MIN_HZ: u16 = 20;
+const LOWCUT_MAX_HZ: u16 = 600;
+
+/// Bus/UI id → output channel id on the wire (same space as ChannelMaster:
+/// Main=0x0F, Mon1/2=0x0A/0x0B, FX1/2=0x0C/0x0D; ui bus Main=7, Mon1=8 …).
+pub fn bus_to_output_id(bus_id: u8) -> u8 {
+    if bus_id >= 8 {
+        0x0A + (bus_id - 8)
+    } else {
+        0x0F
+    }
+}
+
+/// fix8 selector 1 (pan): clamp ±1, truncate(pan·127+127).
+pub fn cc_to_sel1(cc: u8) -> u8 {
+    let pan = cc as f32 / 127.0 * 2.0 - 1.0;
+    (((pan * 127.0 + 127.0) as i32).clamp(0, 254)) as u8
+}
+
+/// fix8 selector 5 (gain/limiter dB): round((dB+60)·2); cc scaled onto min…max dB.
+pub fn db_range_to_sel5(cc: u8, min_db: f32, max_db: f32) -> u8 {
+    let db = min_db + cc as f32 / 127.0 * (max_db - min_db);
+    (((db + 60.0) * 2.0).round() as i32).clamp(0, 240) as u8
+}
+
+/// fix8 selector 2 (squeezer 0…1): truncate(ratio·255); UI knob is 0…100.
+pub fn cc_to_sel2(cc: u8) -> u8 {
+    (cc as u32 * 255 / 100) as u8
+}
+
+/// fix8 selector 4 (EQ/GEQ gain dB, ±15): round(dB/15·127+127); cc scaled onto min…max.
+pub fn db_range_to_sel4(cc: u8, min_db: f32, max_db: f32) -> u8 {
+    let db = min_db + cc as f32 / 127.0 * (max_db - min_db);
+    (((db / 15.0 * 127.0 + 127.0).round() as i32).clamp(0, 255)) as u8
+}
+
+/// fix8 selector 6 (Q): linear 0.1 steps from 0.3 → byte 8 = Q 1.0.
+pub const GEQ_Q_BYTE: u8 = 8;
+
+/// GEQ bands are fixed-frequency on the FLOW 8 (OutputChannel.GEQ_DEFAULT_FREQ
+/// in the official app); Q is fixed 1.0.
+const GEQ_BAND_HZ: [u16; 9] = [63, 125, 250, 500, 1000, 2000, 4000, 8000, 16000];
+
+/// UI lowcut CC → (on, Hz): cc 0 = off, else 20…600 Hz.
+pub fn cc_to_hpf(cc: u8) -> (bool, u16) {
+    let hz = (LOWCUT_MIN_HZ as f32 + cc as f32 / 127.0 * (LOWCUT_MAX_HZ - LOWCUT_MIN_HZ) as f32).round() as u16;
+    (cc > 0, hz.max(LOWCUT_MIN_HZ))
+}
+
+/// GEQ band index → fixed band frequency.
+pub fn geq_band_hz(band: u8) -> u16 {
+    GEQ_BAND_HZ.get(band as usize).copied().unwrap_or(GEQ_BAND_HZ[0])
+}
+
+/// ChannelPan (0x00): [id][sel1].
+pub fn send_channel_pan(conn: &BleConnection, id: u8, cc: u8) -> Result<(), String> {
+    send_ble_struct_command(conn, 0x00, &[id, cc_to_sel1(cc)])
+}
+
+/// ChannelGain (0x02): [id][sel5] — app gain scale −20…+60 dB.
+pub fn send_channel_gain(conn: &BleConnection, id: u8, cc: u8) -> Result<(), String> {
+    send_ble_struct_command(
+        conn,
+        0x02,
+        &[id, db_range_to_sel5(cc, GAIN_MIN, GAIN_MAX)],
+    )
+}
+
+/// ChannelHPF (0x04): [id][on][be16 freq Hz] — UI cc 0 = off, else 20…600 Hz.
+pub fn send_channel_hpf(conn: &BleConnection, id: u8, cc: u8) -> Result<(), String> {
+    let (on, hz) = cc_to_hpf(cc);
+    send_ble_struct_command(conn, 0x04, &[id, on as u8, (hz >> 8) as u8, (hz & 0xFF) as u8])
+}
+
+/// ChannelCompressor (0x13): [id][sel2] — UI knob 0…100.
+pub fn send_channel_compressor(conn: &BleConnection, id: u8, cc: u8) -> Result<(), String> {
+    send_ble_struct_command(conn, 0x13, &[id, cc_to_sel2(cc)])
+}
+
+/// ChannelPhantomPower (0x15): [id][bool].
+pub fn send_channel_phantom(conn: &BleConnection, id: u8, on: bool) -> Result<(), String> {
+    send_ble_struct_command(conn, 0x15, &[id, on as u8])
+}
+
+/// ChannelLimiter (0x14): [id][sel5] — app limiter scale −30…0 dB.
+pub fn send_channel_limiter(conn: &BleConnection, id: u8, cc: u8) -> Result<(), String> {
+    send_ble_struct_command(
+        conn,
+        0x14,
+        &[id, db_range_to_sel5(cc, LIMITER_MIN, LIMITER_MAX)],
+    )
+}
+
+/// ChannelGEQ (0x03): [id][band][be16 freq][sel6 Q][sel4 gain] — app EQ scale
+/// −15…+15 dB. shortcut: always sends the default band freq/Q (the official
+/// app never changes them for the 9-band GEQ); upgrade if a dump ever shows
+/// non-default GEQ freq/Q.
+pub fn send_bus_geq_gain(conn: &BleConnection, id: u8, band: u8, cc: u8) -> Result<(), String> {
+    let freq = geq_band_hz(band);
+    send_ble_struct_command(
+        conn,
+        0x03,
+        &[
+            id,
+            band,
+            (freq >> 8) as u8,
+            (freq & 0xFF) as u8,
+            GEQ_Q_BYTE,
+            db_range_to_sel4(cc, EQ_MIN, EQ_MAX),
+        ],
+    )
+}
+
 /// Run the meter receive loop on its own thread, riding the main session's
 /// notification stream (a second subscribe() on the same connection stalls on
 /// BlueZ; the mixer answers meter polls only on an authenticated connection).
@@ -1260,4 +1385,36 @@ pub fn disconnect(conn: &BleConnection) {
             log!("[BLE] Disconnected");
         }
     });
+}
+
+#[cfg(test)]
+mod knob_tests {
+    use super::*;
+
+    #[test]
+    fn fix8_selectors_match_the_official_conversions() {
+        assert_eq!(cc_to_sel1(0), 0);
+        assert_eq!(cc_to_sel1(127), 254);
+        assert_eq!(cc_to_sel1(64), 128);
+        assert_eq!(cc_to_sel2(0), 0);
+        assert_eq!(cc_to_sel2(100), 255);
+        assert_eq!(cc_to_sel2(50), 127);
+        assert_eq!(db_range_to_sel5(0, LIMITER_MIN, LIMITER_MAX), 60);
+        assert_eq!(db_range_to_sel5(127, LIMITER_MIN, LIMITER_MAX), 120);
+        // sel5 gain: app 0 dB is at cc 32 on the −20…+60 dB scale; cc 64 = +20 dB
+        assert_eq!(db_range_to_sel5(32, GAIN_MIN, GAIN_MAX), 120);
+        assert_eq!(db_range_to_sel5(64, GAIN_MIN, GAIN_MAX), 161);
+        // sel4 EQ: 0 dB sits at cc 63.5 — cc 64 = +0.118 dB → 128
+        assert_eq!(db_range_to_sel4(64, EQ_MIN, EQ_MAX), 128);
+        assert_eq!(db_range_to_sel4(0, EQ_MIN, EQ_MAX), 0);
+        assert_eq!(db_range_to_sel4(127, EQ_MIN, EQ_MAX), 254);
+        assert_eq!(cc_to_hpf(0), (false, LOWCUT_MIN_HZ));
+        assert_eq!(cc_to_hpf(127), (true, LOWCUT_MAX_HZ));
+        assert_eq!(geq_band_hz(0), 63);
+        assert_eq!(geq_band_hz(8), 16000);
+        assert_eq!(GEQ_Q_BYTE, 8);
+        assert_eq!(bus_to_output_id(7), 0x0F);
+        assert_eq!(bus_to_output_id(8), 0x0A);
+        assert_eq!(bus_to_output_id(11), 0x0D);
+    }
 }

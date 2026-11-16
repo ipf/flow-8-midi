@@ -432,8 +432,40 @@ const CHANNEL_LEVELS: [FloatParam; 7] = [
 
 ***
 
-## 7. File Structure
+## 7. Native BLE Knob Ops
 
+When the BLE link is up, the audio-path knob messages are sent on their
+native mixer-state ops instead of USB MIDI CC (fallback when BLE is off).
+Payloads are the wire bytes of the official app's field-table serializer
+(`CMD_FT` in the Kotlin oracle) — same compact framing as the other
+commands: `[type][count=1][fields…][additive checksum]`.
+
+| UI knob | Op | Wire payload | Value encoding |
+|---------|-----|--------------|----------------|
+| Gain | 0x02 | `[id][sel5]` | dB −20…+60 (app scale) → `round((dB+60)·2)` |
+| Pan | 0x00 | `[id][sel1]` | −1…+1 → `trunc(pan·127+127)` |
+| Low Cut | 0x04 | `[id][on][be16 Hz]` | cc 0 = off; else 20…600 Hz |
+| Compressor | 0x13 | `[id][sel2]` | knob 0…100 → `trunc(v·255/100)` |
+| Bus Limiter | 0x14 | `[id][sel5]` | dB −30…0 → `round((dB+60)·2)` |
+| Bus GEQ band | 0x03 | `[id][band][be16 Hz][sel6 Q][sel4 dB]` | fixed bands 63 Hz…16 kHz, Q = 1.0 → byte 8; gain −15…+15 dB → `round(dB/15·127+127)` |
+| Phantom | 0x15 | `[id][bool]` | 0/1 |
+
+Notes:
+
+* **16-bit fields are BIG-endian on the wire** (serializer field type 4
+  writes the high byte first) — unlike the little-endian cmd-struct form
+  in the official app's memory.
+* Output-channel ops (limiter, GEQ) use the ChannelMaster id space:
+  Main=0x0F, Mon1/2=0x0A/0x0B, FX1/2=0x0C/0x0D; input ops use 0…6.
+* Still on USB CC on purpose:
+  * Channel EQ bands (0x09) — the payload needs each band's freq/Q,
+    which the dump decoder does not track; sending guesses would clobber
+    the device's band settings.
+  * Channel→FX sends (0x06 with FX dst) — dst id unverified on device.
+* `src/service/ble.rs` holds the encoders + a `knob_tests` unit test
+  pinning them to the Kotlin conversions (`floatToFix8` selectors 1–6).
+
+## 8. File Structure
 ```
 flow-8-midi/
 ├── src/

@@ -329,8 +329,77 @@ fn update(controller: &mut FLOW8Controller, message: InterfaceMessage) {
             return;
         }
     }
+    // Audio-path knobs go out on their native BLE ops when the BLE link is
+    // up (BLE-only connections then work fully); USB CC (7-bit, cable-only)
+    // is the fallback. Sends run on a background thread — never block the UI.
+    if send_ble_knob(controller, &message) {
+        update_interface(controller, message);
+        return;
+    }
     match_midi_command(&message, &mut controller.midi_conn);
     update_interface(controller, message);
+}
+
+/// Native-op sends for the knob messages the USB CC map normally covers.
+/// Returns true when the message was handled over BLE (caller then skips the
+/// USB CC path). FX sends (channel→FX1/2) stay on USB CC: their ChannelMaster
+/// dst id is unverified. Channel EQ (0x09) stays on USB CC too: the dump
+/// decoder does not track PEQ band freq/Q, and 0x09 requires them on the wire.
+fn send_ble_knob(controller: &FLOW8Controller, message: &InterfaceMessage) -> bool {
+    let conn_arc = controller.ble_connection.clone();
+    let has_conn = conn_arc.lock().ok().map(|g| g.is_some()).unwrap_or(false);
+    if !has_conn {
+        return false;
+    }
+    let ch_id = |ch: u8| controller.channels[ch as usize].id;
+    let cmd: Option<(u8, Vec<u8>, &'static str)> = match *message {
+        InterfaceMessage::Gain(ch, v) => {
+            Some((0x02, vec![ch_id(ch), ble::db_range_to_sel5(v, sysex_parser::GAIN_MIN, sysex_parser::GAIN_MAX)], "gain"))
+        }
+        InterfaceMessage::Balance(ch, v) => Some((0x00, vec![ch_id(ch), ble::cc_to_sel1(v)], "pan")),
+        InterfaceMessage::LowCut(ch, v) => {
+            let (on, hz) = ble::cc_to_hpf(v);
+            Some((0x04, vec![ch_id(ch), on as u8, (hz >> 8) as u8, (hz & 0xFF) as u8], "hpf"))
+        }
+        InterfaceMessage::Compressor(ch, v) => Some((0x13, vec![ch_id(ch), ble::cc_to_sel2(v)], "comp")),
+        InterfaceMessage::BusLimiter(_, bus_id, v) => Some((
+            0x14,
+            vec![ble::bus_to_output_id(bus_id), ble::db_range_to_sel5(v, sysex_parser::LIMITER_MIN, sysex_parser::LIMITER_MAX)],
+            "limiter",
+        )),
+        InterfaceMessage::BusNineBandEq(_, bus_id, band, v) => {
+            let freq = ble::geq_band_hz(band);
+            Some((
+                0x03,
+                vec![
+                    ble::bus_to_output_id(bus_id),
+                    band,
+                    (freq >> 8) as u8,
+                    (freq & 0xFF) as u8,
+                    ble::GEQ_Q_BYTE,
+                    ble::db_range_to_sel4(v, sysex_parser::EQ_MIN, sysex_parser::EQ_MAX),
+                ],
+                "geq",
+            ))
+        }
+        _ => None,
+    };
+    let Some((opcode, payload, label)) = cmd else {
+        return false;
+    };
+    std::thread::spawn(move || {
+        let Ok(guard) = conn_arc.lock() else {
+            return;
+        };
+        if let Some(conn) = guard.as_ref() {
+            if let Err(e) = ble::send_ble_struct_command(conn, opcode, &payload) {
+                log_warn!("[BLE] {} send failed: {}", label, e);
+            } else {
+                log_debug!("[BLE] {} sent (op 0x{:02X})", label, opcode);
+            }
+        }
+    });
+    true
 }
 
 fn try_ble_dump_trigger(controller: &FLOW8Controller) -> Option<Result<(), String>> {
@@ -465,8 +534,23 @@ fn update_interface(controller: &mut FLOW8Controller, message: InterfaceMessage)
             if is_double {
                 c.phantom_pwr.is_on = !c.phantom_pwr.is_on;
                 c.phantom_last_click = None;
-                if let Some(conn) = controller.midi_conn.as_mut() {
-                    send_cc(conn, ch, 12, if c.phantom_pwr.is_on { 127 } else { 0 });
+                let (id, on) = (c.id, c.phantom_pwr.is_on);
+                let conn_arc = controller.ble_connection.clone();
+                let has_ble = conn_arc.lock().ok().map(|g| g.is_some()).unwrap_or(false);
+                if has_ble {
+                    // native PhantomPower (0x15) — no USB CC when BLE is up
+                    std::thread::spawn(move || {
+                        let Ok(guard) = conn_arc.lock() else {
+                            return;
+                        };
+                        if let Some(conn) = guard.as_ref() {
+                            if let Err(e) = ble::send_channel_phantom(conn, id, on) {
+                                log_warn!("[BLE] phantom send failed: {}", e);
+                            }
+                        }
+                    });
+                } else if let Some(conn) = controller.midi_conn.as_mut() {
+                    send_cc(conn, ch, 12, if on { 127 } else { 0 });
                 }
             } else {
                 c.phantom_last_click = Some(now);
