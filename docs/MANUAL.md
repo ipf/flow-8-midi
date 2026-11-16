@@ -58,6 +58,7 @@ If the FLOW 8 is not detected, the app shows the Device Selection screen with an
 The navigation bar is always visible at the top of the application once connected.
 
 * **Mixer** — the main mixing view.
+* **Connect / Disconnect button** — label follows the BLE state: **Connect** (green) when not linked, starts the Bluetooth connection; **Disconnect** (red) when linked, tears it down. Disabled while scanning or connecting.
 * **Gear icon (⚙)** — opens Settings.
 * **Question mark (?)** — opens the About page (app info, manual, debug log). The Debug Log section has a **Show debug entries** switch — off by default, the log list stays hidden until you enable it; the **Copy to Clipboard** and **Save as File** buttons always export the full log.
 * **Sync button** — visible when Bluetooth is connected; requests the current state from the mixer.

@@ -1014,6 +1014,9 @@ fn update_interface(controller: &mut FLOW8Controller, message: InterfaceMessage)
             }
         }
 
+        InterfaceMessage::BleConnectNow => {
+            start_ble_connection(controller);
+        }
         InterfaceMessage::BleConnect => {
             let now = std::time::Instant::now();
             let is_double = controller

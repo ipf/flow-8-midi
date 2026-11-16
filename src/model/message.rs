@@ -61,6 +61,7 @@ pub enum InterfaceMessage {
     CopyDebugLog,
     SaveDebugLog,
     SetDebugLog(bool),
+    BleConnectNow,
     #[cfg(any(debug_assertions, feature = "dev-tools"))]
     CopyHexDump,
     Tick,

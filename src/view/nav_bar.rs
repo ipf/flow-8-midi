@@ -37,21 +37,29 @@ pub fn view_nav_bar(controller: &FLOW8Controller) -> Element<'_, InterfaceMessag
         BleStatus::Connected | BleStatus::Scanning | BleStatus::Connecting | BleStatus::Authenticating
     );
 
-    let disconnect_btn = {
-        let base = button(text("Disconnect").size(11))
-            .padding([4, 10])
-            .style(button::danger);
-        if ble_active {
-            base.on_press(InterfaceMessage::Disconnect)
+    // one button, label follows the state: Connect (primary) when idle,
+    // Disconnect (danger) when a link exists; busy states (scanning,
+    // connecting) keep it disabled — there is no link to tear down yet
+    let (btn_label, tip) = if ble_active {
+        ("Disconnect", "Disconnect BLE from mixer")
+    } else {
+        ("Connect", "Connect to the FLOW 8 via Bluetooth")
+    };
+    let btn_base = button(text(btn_label).size(11)).padding([4, 10]);
+    let connect_btn = if ble_active {
+        if controller.ble_status == BleStatus::Connected {
+            btn_base.style(button::danger).on_press(InterfaceMessage::Disconnect)
         } else {
-            base
+            btn_base.style(button::danger)
         }
+    } else {
+        btn_base.style(button::primary).on_press(InterfaceMessage::BleConnectNow)
     };
 
     tabs = tabs.push(
         tooltip(
-            disconnect_btn,
-            container(text("Disconnect BLE from mixer").size(11))
+            connect_btn,
+            container(text(tip).size(11))
                 .padding(6)
                 .style(container::rounded_box),
             Position::Bottom,

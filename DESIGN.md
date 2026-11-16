@@ -7,7 +7,8 @@ covers UI only; protocol and architecture live in the code and
 
 ## Pages
 
-Nav bar (top): Mixer tab, BT indicator + Disconnect (when connected),
+Nav bar (top): Mixer tab, BT indicator + Connect/Disconnect button
+(Connect when idle, Disconnect when linked — disabled while scanning),
 Settings gear, Help button. Four pages plus an error state:
 
 * **Mixer** — the main screen; every control lives here (see below).
