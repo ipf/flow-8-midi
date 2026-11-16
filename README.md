@@ -13,7 +13,7 @@ Made with [Rust](https://www.rust-lang.org/), [iced](https://iced.rs/), [midir](
 
 ## Download
 
-Pre-built binaries for Linux (x86_64), Windows (x86_64), and macOS (Apple Silicon) are available on the [Releases page](https://github.com/ipf/flow-8-midi/releases) (current release: v1.2.0).
+Pre-built binaries for Linux (x86_64), Windows (x86_64), and macOS (Apple Silicon) are available on the [Releases page](https://github.com/ipf/flow-8-midi/releases) (current release: v1.2.1).
 
 ## Features
 
