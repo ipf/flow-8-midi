@@ -18,7 +18,9 @@ Settings gear, Help button. Four pages plus an error state:
 * **Manual** (About → Open Manual) — `docs/MANUAL.md` rendered in-app
   with light markdown formatting (heading sizes, bullets, grey quotes,
   ← Back). No browser.
-* **About** (?) — app info, Open Manual, debug log tools.
+* **About** (?) — app info, Open Manual, debug log tools with a
+  "Show debug entries" switch (off by default: the log list stays
+  hidden until enabled; Copy/Save exports always include everything).
 * **Device Select** — error state when no FLOW 8 is found: message +
   Retry / Copy Log / Save Log.
 

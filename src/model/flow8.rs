@@ -118,6 +118,9 @@ pub struct FLOW8Controller {
     pub snapshot_names: Vec<Option<String>>,
     pub snapshot_names_receiver: Option<mpsc::Receiver<Vec<Option<String>>>>,
     pub fx_muted: bool,
+    /// About page switch: show DEBUG-level entries in the in-app log view
+    /// (the log file always keeps everything). Default off.
+    pub show_debug_log: bool,
     pub snapshot_resync_at: Option<Instant>,
     pub rename_target: Option<RenameTarget>,
     pub rename_buffer: String,
@@ -234,6 +237,7 @@ impl FLOW8Controller {
             snapshot_names: vec![None; SNAPSHOT_COUNT],
             snapshot_names_receiver: None,
             fx_muted: false,
+            show_debug_log: false,
             snapshot_resync_at: None,
             rename_target: None,
             rename_buffer: String::new(),

@@ -22,6 +22,7 @@ Pre-built binaries for Linux (x86_64), Windows (x86_64), and macOS (Apple Silico
 * **BLE sync**: when connected via Bluetooth, reads the mixer's full state (all parameters, snapshot names, device settings) and reflects it in the UI.
 * **Auto-detection**: automatically detects the FLOW 8 on startup via USB MIDI.
 * **Cross-platform**: works on Windows, Linux, and macOS.
+* **About page**: app info, in-app manual, and a debug log view with a "Show debug entries" switch (off by default — the log file always captures everything).
 
 ## How to Use
 

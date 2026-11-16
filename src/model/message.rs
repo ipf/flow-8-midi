@@ -60,6 +60,7 @@ pub enum InterfaceMessage {
     OpenDonation,
     CopyDebugLog,
     SaveDebugLog,
+    SetDebugLog(bool),
     #[cfg(any(debug_assertions, feature = "dev-tools"))]
     CopyHexDump,
     Tick,

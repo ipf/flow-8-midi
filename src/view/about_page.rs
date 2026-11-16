@@ -8,7 +8,7 @@ use crate::model::{
 #[cfg(any(debug_assertions, feature = "dev-tools"))]
 use crate::service::sysex_parser;
 use iced::{
-    widget::{button, column, container, row, scrollable, text, Space},
+    widget::{button, checkbox, column, container, row, scrollable, text, Space},
     Center, Element, Fill, Length,
 };
 
@@ -75,23 +75,37 @@ fn build_log_section(controller: &FLOW8Controller) -> Element<'_, InterfaceMessa
 
     let header_row = row![
         header,
+        checkbox::Checkbox::new(controller.show_debug_log)
+            .label("Show debug entries")
+            .on_toggle(InterfaceMessage::SetDebugLog),
         Space::new().width(Fill),
         text(device_label).size(11),
     ]
     .align_y(Center);
 
-    let entries = logger::get_recent_entries(VISIBLE_ENTRIES);
-    let count = logger::entry_count();
+    // switch off (default): the UI shows no log entries — the log file and
+    // the clipboard/save exports still carry everything
+    let entries_full: Vec<logger::LogEntry> = if controller.show_debug_log {
+        logger::get_recent_entries(logger::RING_BUFFER_CAPACITY)
+    } else {
+        Vec::new()
+    };
+    let start = entries_full.len().saturating_sub(VISIBLE_ENTRIES);
+    let entries = &entries_full[start..];
 
     let mut log_col = iced::widget::Column::new().spacing(1);
 
-    if count > VISIBLE_ENTRIES {
+    if entries_full.len() > VISIBLE_ENTRIES {
         log_col = log_col.push(
-            text(format!("... ({} earlier entries omitted)", count - VISIBLE_ENTRIES)).size(10),
+            text(format!(
+                "... ({} earlier entries omitted)",
+                entries_full.len() - VISIBLE_ENTRIES
+            ))
+            .size(10),
         );
     }
 
-    for entry in &entries {
+    for entry in entries {
         let entry_text = text(format!("{}", entry)).size(11);
         let styled = match entry.level {
             logger::LogLevel::Error => entry_text.color(iced::Color::from_rgb(1.0, 0.3, 0.3)),
@@ -102,7 +116,12 @@ fn build_log_section(controller: &FLOW8Controller) -> Element<'_, InterfaceMessa
     }
 
     if entries.is_empty() {
-        log_col = log_col.push(text("No log entries yet.").size(11));
+        let placeholder = if controller.show_debug_log {
+            "No log entries yet."
+        } else {
+            "Log display off."
+        };
+        log_col = log_col.push(text(placeholder).size(11));
     }
 
     let log_scroll = scrollable(log_col).height(Length::Fixed(300.0));
@@ -144,7 +163,7 @@ fn build_log_section(controller: &FLOW8Controller) -> Element<'_, InterfaceMessa
         "OS: {} {} | Entries: {}",
         std::env::consts::OS,
         std::env::consts::ARCH,
-        count,
+        logger::entry_count(),
     ))
     .size(10);
 

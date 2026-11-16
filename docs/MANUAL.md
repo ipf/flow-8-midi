@@ -59,7 +59,7 @@ The navigation bar is always visible at the top of the application once connecte
 
 * **Mixer** — the main mixing view.
 * **Gear icon (⚙)** — opens Settings.
-* **Question mark (?)** — opens the About page (app info, manual, debug log).
+* **Question mark (?)** — opens the About page (app info, manual, debug log). The Debug Log section has a **Show debug entries** switch — off by default, the log list stays hidden until you enable it; the **Copy to Clipboard** and **Save as File** buttons always export the full log.
 * **Sync button** — visible when Bluetooth is connected; requests the current state from the mixer.
 
 ### 3.1 Sync Status

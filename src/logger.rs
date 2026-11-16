@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 
 const LOG_FILENAME: &str = "flow8-midi.log";
-const RING_BUFFER_CAPACITY: usize = 2000;
+pub const RING_BUFFER_CAPACITY: usize = 2000;
 
 static LOG_PATH: OnceLock<PathBuf> = OnceLock::new();
 static LOG_BUFFER: OnceLock<Mutex<VecDeque<LogEntry>>> = OnceLock::new();

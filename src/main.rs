@@ -394,17 +394,24 @@ fn update_interface(controller: &mut FLOW8Controller, message: InterfaceMessage)
         }
         InterfaceMessage::Disconnect => {
             log!("[APP] Disconnecting BLE...");
-            if let Ok(mut guard) = controller.ble_connection.lock() {
-                if let Some(ref conn) = *guard {
-                    ble::disconnect(conn);
-                }
-                *guard = None;
-            }
+            // take the connection out under the lock (instant) and tear the
+            // link down in a background thread — the bluez disconnect can
+            // block for many seconds (device cooldown), which froze the UI
+            let conn = controller
+                .ble_connection
+                .lock()
+                .ok()
+                .and_then(|mut guard| guard.take());
             controller.ble_status = ble::BleStatus::Disconnected;
             controller.ble_status_receiver = None;
             controller.snapshot_names_receiver = None;
             controller.last_sync_time = None;
             controller.mark_all_unsynced();
+            if let Some(conn) = conn {
+                std::thread::spawn(move || {
+                    ble::disconnect(&conn);
+                });
+            }
         }
 
         InterfaceMessage::Mute(ch, _) => {
@@ -1162,6 +1169,9 @@ fn update_interface(controller: &mut FLOW8Controller, message: InterfaceMessage)
         }
         InterfaceMessage::OpenDonation => {
             open_url("https://buymeacoffee.com/abelroes");
+        }
+        InterfaceMessage::SetDebugLog(on) => {
+            controller.show_debug_log = on;
         }
         InterfaceMessage::CopyDebugLog => {
             let export = logger::export_log();
