@@ -1070,13 +1070,20 @@ pub fn db_range_to_sel4(cc: u8, min_db: f32, max_db: f32) -> u8 {
 /// fix8 selector 6 (Q): linear 0.1 steps from 0.3 → byte 8 = Q 1.0.
 pub const GEQ_Q_BYTE: u8 = 8;
 
-/// Channel PEQ (0x09) sends use the factory-default band frequency and Q=1.0
-/// (byte 8, same selector scale as GEQ) — the dump decode of the per-band
-/// freq/Q bytes is unfinished.
-/// shortcut: a knob gain move resets that band's freq/Q to the defaults,
-/// upgrade when the PEQ freq/Q dump decode lands.
+/// Channel PEQ (0x09) factory defaults, used for ch2–7 and ch1 before a
+/// state-dump decode; ch1 knobs reuse the band's real freq/Q from
+/// channels[ch].peq_bands (q_to_sel6 re-encodes it).
 pub const PEQ_Q_BYTE: u8 = 8;
 pub const PEQ_BAND_FREQ: [u16; 4] = [100, 500, 2000, 12000];
+
+/// Q read back from the dump → fix8 selector 6 byte (inverse of the
+/// 0.3 + (byte−1)·0.1 scale); byte 0 = Q 0.0. Verified 1.0→8, 0.8→6, 2.0→18.
+pub fn q_to_sel6(q: f32) -> u8 {
+    if q <= 0.0 {
+        return 0;
+    }
+    ((((q - 0.3) * 10.0).round() as i32) + 1).clamp(1, 101) as u8
+}
 
 /// GEQ bands are fixed-frequency on the FLOW 8 (OutputChannel.GEQ_DEFAULT_FREQ
 /// in the official app); Q is fixed 1.0.

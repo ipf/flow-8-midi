@@ -270,6 +270,48 @@ The recurring subsequence `00 00 10 43` encodes the float data bytes of **-144.0
 
 The `22` and `08` bytes within the pattern are MSB bytes with specific bits set to restore the high bit of `43` → `C3` on their associated data bytes. When a parameter deviates from the default (e.g., a fader is moved), the corresponding bytes differ from this baseline pattern.
 
+#### 2.3.6 Channel PEQ Bands — Memory Layout (ch1, probe-verified 2026-11-17)
+
+Verified on device with 0x09 writes + USB dump diffs (probe_eq.rs runs, 7 dumps
+each): EQ gain region 0x074B–0x074F, then the per-band frequency and Q fields.
+Frequency = u16 little-endian with **bit 7 of the low byte parked** at a
+scattered (byte, bit) spot; Q = f32 little-endian with **each byte's bit 7
+parked** the same way.
+
+| Band | Freq lo/hi | Freq lo bit7 parked at | Q f32 bytes | Q bit7 parking |
+|------|------------|------------------------|-------------|----------------|
+| 1 | 0x075A/0x075B | 0x0759 bit 0 | 0x0763–0x0766 | 0x0760 bits 3 (b0), 2 (b1) |
+| 2 | 0x075C/0x075D | 0x0759 bit 2 | 0x0768–0x076B | 0x0767 bits 0–3 (b0..b3, bit2 verified) |
+| 3 | 0x075E/0x075F | 0x0760 bit 0 | 0x076C, 0x076D, 0x076F, 0x0770 (0x076E is a gap byte) | b0/b1 bit7 → 0x0767 bits 5/4; **b2 bit7 → 0x076E bit 0** |
+| 4 | 0x0761/0x0762 | 0x0760 bit 4 | 0x0771–0x0774 | 0x076E bits 2/3 (b0, b1) |
+
+Notes:
+
+* Q values on the wire are quantized to 0.1 steps (fix8 sel6: `Q = 0.3 +
+  (byte−1)·0.1`, byte 0 = Q 0.0), so among reachable Q values the b0/b1
+  bit7s are always set together — the bit order inside a pair is
+  unobservable and decode-safe either way. b2's bit7 is set only at Q 1.0
+  (0x80) and Q 1.9 (0xF3); b3's never (0x3E/0x3F/0x40).
+* Band 3's Q at Q=1.0 stores `00 00 01 00` — the 0x80 of byte 2 lives as
+  bit 0 of gap byte 0x076E, which is what made this band look undecodable
+  before the probe.
+* Device baseline oddity: ch1 band 4 came from the factory at 12000 Hz
+  with its parked bit CLEAR (decodes as 11872); our own 0x09 writes store
+  the parked bit consistently, so treat 11872/12000 as equivalent or
+  re-anchor on the next full dump.
+* EQ gain region (0x074B–0x074F, ch1) is 5 bytes — not yet decoded to a
+  float form; the CHANNEL_EQ gain tables already decode it via the
+  calibrated FloatParam scheme.
+* Other channels' bands sit at non-uniform strides (ch1→ch2 +0x3F,
+  ch2→ch3 +0x83, …); per-channel offset tables would follow the
+  FloatParam calibration pattern.
+* The **BLE handshake state dump** (compact 0x38 chunks at session start,
+  ~512 bytes over 4 chunks) carries each channel's PEQ freqs as plain
+  BE16 plus per-band Q fix8 bytes inline — a far simpler decode source
+  than this USB dump layout if freq/Q read-back is ever needed for all
+  channels at once.
+
+
 ***
 
 ## 3. BLE (Bluetooth Low Energy) — Proprietary Protocol

@@ -447,6 +447,62 @@ fn decode_float(data: &[u8], param: &FloatParam) -> Option<f32> {
     Some(value)
 }
 
+/// ch1 PEQ band layout (USB dump, probe-verified 2026-11-17 — see
+/// docs/flow8-midi-implementation.md §2.3.6). Frequencies are u16 LE with
+/// the low byte's bit 7 parked elsewhere; Q is f32 LE with each byte's
+/// bit 7 parked elsewhere. Offsets are ch1-specific — ch2–7 sit at
+/// irregular strides and are not decoded yet.
+const PEQ_CH1_FREQ: [[usize; 2]; 4] = [
+    [0x75A, 0x75B],
+    [0x75C, 0x75D],
+    [0x75E, 0x75F],
+    [0x761, 0x762],
+];
+/// (byte, bit) where each band's freq low-byte bit 7 lives.
+const PEQ_CH1_FREQ_PARK: [(usize, u8); 4] = [(0x759, 0), (0x759, 2), (0x760, 0), (0x759, 4)];
+const PEQ_CH1_Q: [[usize; 4]; 4] = [
+    [0x763, 0x764, 0x765, 0x766],
+    [0x768, 0x769, 0x76A, 0x76B],
+    [0x76C, 0x76D, 0x76F, 0x770],
+    [0x771, 0x772, 0x773, 0x774],
+];
+/// (byte, bit) where each Q byte's bit 7 lives; None = byte 3, whose bit 7
+/// is clear for every reachable Q (0.0…10.3) and never parked.
+const PEQ_CH1_Q_PARK: [[Option<(usize, u8)>; 4]; 4] = [
+    [Some((0x760, 3)), Some((0x760, 2)), Some((0x760, 4)), None],
+    [Some((0x767, 0)), Some((0x767, 1)), Some((0x767, 2)), Some((0x767, 3))],
+    [Some((0x767, 4)), Some((0x767, 5)), Some((0x76E, 0)), None],
+    [Some((0x76E, 2)), Some((0x76E, 3)), Some((0x76E, 4)), None],
+];
+
+/// Decode one ch1 PEQ band's (freq Hz, Q) from a USB state dump. None when
+/// bytes are missing or the value is implausible (parked-bit corruption).
+fn decode_peq_band(data: &[u8], band: usize) -> Option<(u16, f32)> {
+    let bit = |byte: usize, b: u8| data.get(byte).is_some_and(|v| v & (1 << b) != 0);
+    let [lo, hi] = PEQ_CH1_FREQ[band];
+    let (park, pbit) = PEQ_CH1_FREQ_PARK[band];
+    let lo_b = *data.get(lo)? | if bit(park, pbit) { 0x80 } else { 0 };
+    let freq = u16::from(lo_b) | ((*data.get(hi)? as u16) << 8);
+    let mut q_bytes = [0u8; 4];
+    for (k, &off) in PEQ_CH1_Q[band].iter().enumerate() {
+        let set = PEQ_CH1_Q_PARK[band][k].is_some_and(|(pb, pb2)| bit(pb, pb2));
+        q_bytes[k] = (data.get(off).copied().unwrap_or(0) & 0x7F) | if set { 0x80 } else { 0 };
+    }
+    let q = f32::from_le_bytes(q_bytes);
+    // reachable device Qs: 0.0 (off) or 0.3…10.3; anything else means a
+    // stray park bit corrupted the decode
+    if q != 0.0 && !(0.25..=10.5).contains(&q) {
+        return None;
+    }
+    Some((freq, q))
+}
+
+/// ch1 per-band (freq Hz, Q) from a state dump; None entries mean that band
+/// is not usable (ch2–7 have no decode yet and stay at factory defaults).
+pub fn decode_peq_bands(data: &[u8]) -> [Option<(u16, f32)>; 4] {
+    core::array::from_fn(|band| decode_peq_band(data, band))
+}
+
 fn db_to_cc(db: f32) -> u8 {
     if db < LEVEL_DB_MIN {
         return 0;
@@ -615,6 +671,9 @@ fn apply_channel_eq(dump: &SysExDump, controller: &mut FLOW8Controller) -> usize
             count += 1;
         }
     }
+
+    // ch1 PEQ freq/Q (ch2–7 offsets not calibrated yet)
+    controller.channels[0].peq_bands = decode_peq_bands(data);
 
     count
 }
@@ -916,4 +975,34 @@ pub fn format_hex_dump(data: &[u8]) -> String {
         out.push_str(&format!("{:04X}: {:48} | {}\n", i * 16, hex.join(" "), ascii));
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn peq_ch1_decode_matches_probe_dump() {
+        // real bytes from calibration-data/probe-dump-1.hex (probe8, fresh
+        // device state): freqs 100/500/2000/12000, Qs 0.0/1.0/1.0/0.0
+        let mut data = vec![0u8; 0x775];
+        data[0x759] = 0x14;
+        data[0x75A..=0x762]
+            .copy_from_slice(&[0x64, 0x00, 0x74, 0x01, 0x50, 0x07, 0x01, 0x60, 0x2e]);
+        data[0x763..=0x774].copy_from_slice(&[
+            0x00, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x3f, 0x00, 0x00, 0x01, 0x00, 0x3f,
+            0x00, 0x00, 0x00, 0x00,
+        ]);
+        let bands = decode_peq_bands(&data);
+        assert_eq!(bands[0], Some((100, 0.0)));
+        assert_eq!(bands[1], Some((500, 1.0)));
+        assert_eq!(bands[2], Some((2000, 1.0)));
+        assert_eq!(bands[3], Some((12000, 0.0)));
+
+        // band1 Q=1.0 state (probe8 dump 2): b2's bit7 parked at 0x760 bit4
+        data[0x760] = 0x11;
+        data[0x766] = 0x3f;
+        let bands = decode_peq_bands(&data);
+        assert_eq!(bands[0], Some((100, 1.0)));
+    }
 }

@@ -67,6 +67,10 @@ pub struct Channel {
     pub audio_connection: AudioConnection,
     pub channel_strip: BasicChannelStrip,
     pub four_band_eq: FourBandEQ,
+    /// ch1 only: per-PEQ-band (freq Hz, Q) decoded from the state dump;
+    /// None = not decoded yet (ch2–7 never are). Lets EQ knob moves reuse
+    /// the band's real freq/Q in the op 0x09 payload instead of defaults.
+    pub peq_bands: [Option<(u16, f32)>; 4],
     pub sends: ChannelSends,
     /// live output level (linear 0..1) from the meter stream
     pub meter: f32,
@@ -98,6 +102,7 @@ impl Default for Channel {
             audio_connection: AudioConnection::UsbBt,
             channel_strip: BasicChannelStrip::default(),
             four_band_eq: FourBandEQ::default(),
+            peq_bands: [None; 4],
             sends: ChannelSends::default(),
             meter: 0.0,
             meter_target: 0.0,

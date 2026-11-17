@@ -462,9 +462,10 @@ Notes:
 * Still limited on purpose:
   * Channel EQ bands (0x09) — a knob move sends the band's gain with the
     **factory-default frequency and Q**, so it resets that band's freq/Q.
-    The per-band freq/Q bytes in the state dump are only partially decoded
-    (gain is decoded; freq needs the parked-bit layout; Q encoding of band 3
-    is unresolved). Upgrade when the dump decode of freq/Q lands.
+    ch1 preserves freq/Q: the per-band layout is decoded
+    (`flow8-midi-implementation.md` §2.3.6) and the knob payload reuses the
+    band's real values from the last state dump. ch2–7 still send the
+    factory defaults — their offsets are not calibrated yet.
 * `src/service/ble.rs` holds the encoders + a `knob_tests` unit test
   pinning them to the Kotlin conversions (`floatToFix8` selectors 1–6).
 

@@ -21,11 +21,9 @@ pub mod model {
     }
 }
 
-/// Verify the ChannelMaster (0x06) dst ids for the remaining channel sends of
-/// ch1: Mon1 (0x0A?), Mon2 (0x0B?), FX2 (0x0D?). FX1 = 0x0C is already
-/// verified. Dump diffs of calibration-data/probe-dump-*.hex identify which
-/// dump bytes each dst write lands on; final writes restore the −144 (off)
-/// baseline.
+/// Pin the Q=1.0 (byte2 0x80) parking spots for band 1 and band 4 — the two
+/// bands whose Q byte2 parking is still unverified (band 1 Q=1.0 is the
+/// official app's default, so it must decode right). Restores Q=0.0.
 fn main() {
     let (st, _sr) = mpsc::channel();
     let (sn, _nr) = mpsc::channel();
@@ -68,32 +66,27 @@ fn main() {
         ble::send_dump_trigger(conn).expect("dump trigger");
         std::thread::sleep(Duration::from_secs(8));
     };
+    let peq = |conn: &ble::BleConnection, band: u8, freq: u16, q_byte: u8, label: &str| {
+        ble::send_ble_struct_command(
+            conn,
+            0x09,
+            &[0, band, (freq >> 8) as u8, (freq & 0xFF) as u8, q_byte, 127],
+        )
+        .expect(label);
+        println!("{} sent", label);
+        std::thread::sleep(Duration::from_secs(3));
+    };
 
     dump(&conn); // dump1: baseline
 
-    ble::send_channel_master(&conn, 0, 0x0A, 10.0).expect("W1");
-    println!("W1 sent: dst 0x0A +10 dB");
-    std::thread::sleep(Duration::from_secs(3));
-    dump(&conn); // dump2
+    peq(&conn, 0, 100, 8, "W1 band1 Q=1.0"); // dump2
+    dump(&conn);
+    peq(&conn, 3, 12000, 8, "W2 band4 Q=1.0"); // dump3
+    dump(&conn);
 
-    ble::send_channel_master(&conn, 0, 0x0B, 10.0).expect("W2");
-    println!("W2 sent: dst 0x0B +10 dB");
-    std::thread::sleep(Duration::from_secs(3));
-    dump(&conn); // dump3
-
-    ble::send_channel_master(&conn, 0, 0x0D, 10.0).expect("W3");
-    println!("W3 sent: dst 0x0D +10 dB");
-    std::thread::sleep(Duration::from_secs(3));
+    peq(&conn, 0, 100, 0, "R1 band1 Q=0.0");
+    peq(&conn, 3, 12000, 0, "R2 band4 Q=0.0");
     dump(&conn); // dump4
-
-    // restore: all three baseline sends are −144 (off)
-    ble::send_channel_master(&conn, 0, 0x0A, -144.0).expect("R1");
-    std::thread::sleep(Duration::from_secs(2));
-    ble::send_channel_master(&conn, 0, 0x0B, -144.0).expect("R2");
-    std::thread::sleep(Duration::from_secs(2));
-    ble::send_channel_master(&conn, 0, 0x0D, -144.0).expect("R3");
-    std::thread::sleep(Duration::from_secs(2));
-    dump(&conn); // dump5
 
     println!("done");
 }
