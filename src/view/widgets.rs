@@ -37,6 +37,7 @@ pub fn sync_dot(is_synced: bool) -> Element<'static, InterfaceMessage> {
     }
 }
 
+#[allow(dead_code)] // kept for the vertical variant's symmetry; CI -D warnings
 pub fn h_slider<'a, F>(
     range: RangeInclusive<u8>,
     value: u8,

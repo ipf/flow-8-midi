@@ -382,6 +382,34 @@ fn send_ble_knob(controller: &FLOW8Controller, message: &InterfaceMessage) -> bo
                 "geq",
             ))
         }
+        InterfaceMessage::EqLow(ch, v) => Some((0x09, peq_band_payload(ch_id(ch), 0, v), "eq low")),
+        InterfaceMessage::EqLowMid(ch, v) => {
+            Some((0x09, peq_band_payload(ch_id(ch), 1, v), "eq low mid"))
+        }
+        InterfaceMessage::EqHiMid(ch, v) => {
+            Some((0x09, peq_band_payload(ch_id(ch), 2, v), "eq hi mid"))
+        }
+        InterfaceMessage::EqHi(ch, v) => Some((0x09, peq_band_payload(ch_id(ch), 3, v), "eq hi")),
+        InterfaceMessage::SendMon1(ch, v) => Some((
+            0x06,
+            vec![ch_id(ch), 0x0A, ble::db_to_fix8(ble::send_cc_to_db(v))],
+            "send mon1",
+        )),
+        InterfaceMessage::SendMon2(ch, v) => Some((
+            0x06,
+            vec![ch_id(ch), 0x0B, ble::db_to_fix8(ble::send_cc_to_db(v))],
+            "send mon2",
+        )),
+        InterfaceMessage::SendFx1(ch, v) => Some((
+            0x06,
+            vec![ch_id(ch), 0x0C, ble::db_to_fix8(ble::send_cc_to_db(v))],
+            "send fx1",
+        )),
+        InterfaceMessage::SendFx2(ch, v) => Some((
+            0x06,
+            vec![ch_id(ch), 0x0D, ble::db_to_fix8(ble::send_cc_to_db(v))],
+            "send fx2",
+        )),
         _ => None,
     };
     let Some((opcode, payload, label)) = cmd else {
@@ -400,6 +428,20 @@ fn send_ble_knob(controller: &FLOW8Controller, message: &InterfaceMessage) -> bo
         }
     });
     true
+}
+
+/// Channel PEQ (0x09) band-gain payload: [id][band][be16 freq][Q][sel4 gain].
+/// Frequency and Q go out at the factory defaults — see ble::PEQ_Q_BYTE.
+fn peq_band_payload(id: u8, band: u8, cc: u8) -> Vec<u8> {
+    let freq = ble::PEQ_BAND_FREQ[band as usize];
+    vec![
+        id,
+        band,
+        (freq >> 8) as u8,
+        (freq & 0xFF) as u8,
+        ble::PEQ_Q_BYTE,
+        ble::db_range_to_sel4(cc, sysex_parser::EQ_MIN, sysex_parser::EQ_MAX),
+    ]
 }
 
 fn try_ble_dump_trigger(controller: &FLOW8Controller) -> Option<Result<(), String>> {
@@ -956,7 +998,7 @@ fn update_interface(controller: &mut FLOW8Controller, message: InterfaceMessage)
                                 // GR: our channel i == the device's input
                                 // channel idx (0..=6), gr[7] = the metered
                                 // output
-                                ch.gr = gr.get(i as usize).copied().unwrap_or(0);
+                                ch.gr = gr.get(i).copied().unwrap_or(0);
                             }
                             // floats 10/11 = L/R of the rotated metered output
                             // (rotation 0..4 → bus id 7+rot =

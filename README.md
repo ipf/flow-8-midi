@@ -13,7 +13,7 @@ Made with [Rust](https://www.rust-lang.org/), [iced](https://iced.rs/), [midir](
 
 ## Download
 
-Pre-built binaries for Linux (x86_64), Windows (x86_64), and macOS (Apple Silicon) are available on the [Releases page](https://github.com/ipf/flow-8-midi/releases) (current release: v2.0.0).
+Pre-built binaries for Linux (x86_64), Windows (x86_64), and macOS (Apple Silicon) are available on the [Releases page](https://github.com/ipf/flow-8-midi/releases) (current release: v2.1.0).
 
 ## Features
 
@@ -95,7 +95,7 @@ This creates a GitHub Release with binaries for Linux, Windows, and macOS attach
 ## Disclaimers
 
 * This application is not official. Any damage (to the unit or any peripherals), misuse or act that avoids warranty is not our responsibility. Use it at your own risk.
-* USB is one-way: the app can send commands, but the mixer does not report its state over USB. Bluetooth adds state sync — a full state dump on connect and on manual/auto sync, plus a continuous meter feed for fader positions. Mute/solo changes made on the mixer reflect in the UI instantly (BLE flag push); knobs and other parameters update on dumps, not instantly. When Bluetooth is connected, the audio-path knobs (gain, pan, low cut, compressor, limiter, bus GEQ, phantom power) are sent natively over BLE, so they work without the USB cable too — channel EQ bands and channel→FX sends still use the USB MIDI path.
+* USB is one-way: the app can send commands, but the mixer does not report its state over USB. Bluetooth adds state sync — a full state dump on connect and on manual/auto sync, plus a continuous meter feed for fader positions. Mute/solo changes made on the mixer reflect in the UI instantly (BLE flag push); knobs and other parameters update on dumps, not instantly. When Bluetooth is connected, the audio-path knobs (gain, pan, low cut, compressor, limiter, bus GEQ, channel EQ bands, channel sends to Mon1/Mon2/FX1/FX2, phantom power) are sent natively over BLE, so they work without the USB cable too.
 * On Windows, fetching snapshot names via BLE may fail due to a platform-level BLE subscribe limitation (`"The attribute cannot be written."`). Snapshots still load correctly — only the names are unavailable, so all slots will appear unnamed.
 * Current and future implementations are limited by the [FLOW 8 MIDI implementation](./docs/flow8-midi-implementation.md) reverse-engineered from the device.
 * An alternative for custom control of this unit is [TouchOSC](https://hexler.net/touchosc) — use what works best for you.

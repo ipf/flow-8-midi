@@ -448,6 +448,8 @@ commands: `[type][count=1][fields…][additive checksum]`.
 | Compressor | 0x13 | `[id][sel2]` | knob 0…100 → `trunc(v·255/100)` |
 | Bus Limiter | 0x14 | `[id][sel5]` | dB −30…0 → `round((dB+60)·2)` |
 | Bus GEQ band | 0x03 | `[id][band][be16 Hz][sel6 Q][sel4 dB]` | fixed bands 63 Hz…16 kHz, Q = 1.0 → byte 8; gain −15…+15 dB → `round(dB/15·127+127)` |
+| Channel EQ band | 0x09 | `[id][band][be16 Hz][sel6 Q][sel4 dB]` | factory-default band freq (100/500/2000/12000 Hz), Q = 1.0 → byte 8; gain −15…+15 dB → sel4 |
+| Channel send | 0x06 | `[id][dst][F48]` | dst: Mon1=0x0A, Mon2=0x0B, FX1=0x0C, FX2=0x0D (all verified on device); CC −70…+10 dB scale → dB → first fader-table step (`F48`) |
 | Phantom | 0x15 | `[id][bool]` | 0/1 |
 
 Notes:
@@ -457,11 +459,12 @@ Notes:
   in the official app's memory.
 * Output-channel ops (limiter, GEQ) use the ChannelMaster id space:
   Main=0x0F, Mon1/2=0x0A/0x0B, FX1/2=0x0C/0x0D; input ops use 0…6.
-* Still on USB CC on purpose:
-  * Channel EQ bands (0x09) — the payload needs each band's freq/Q,
-    which the dump decoder does not track; sending guesses would clobber
-    the device's band settings.
-  * Channel→FX sends (0x06 with FX dst) — dst id unverified on device.
+* Still limited on purpose:
+  * Channel EQ bands (0x09) — a knob move sends the band's gain with the
+    **factory-default frequency and Q**, so it resets that band's freq/Q.
+    The per-band freq/Q bytes in the state dump are only partially decoded
+    (gain is decoded; freq needs the parked-bit layout; Q encoding of band 3
+    is unresolved). Upgrade when the dump decode of freq/Q lands.
 * `src/service/ble.rs` holds the encoders + a `knob_tests` unit test
   pinning them to the Kotlin conversions (`floatToFix8` selectors 1–6).
 

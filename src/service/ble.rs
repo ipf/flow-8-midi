@@ -144,12 +144,10 @@ async fn scan_for_flow8(adapter: &Adapter) -> Result<Peripheral, String> {
 
             log_debug!("[BLE]   device: \"{}\" addr={}", label, addr);
 
-            if exact.is_none() {
-                if props.local_name.as_deref() == Some(FLOW8_NAME_EXACT) {
-                    log!("[BLE] Matched exact name: \"{}\" addr={}", label, addr);
-                    exact = Some(p.clone());
-                    continue;
-                }
+            if exact.is_none() && props.local_name.as_deref() == Some(FLOW8_NAME_EXACT) {
+                log!("[BLE] Matched exact name: \"{}\" addr={}", label, addr);
+                exact = Some(p.clone());
+                continue;
             }
 
             if fuzzy.is_none() {
@@ -808,6 +806,7 @@ pub fn send_setting(conn: &BleConnection, id: u8, value: u8) -> Result<(), Strin
 /// channel's first/second/third param values, cmd[28..30] = route Main/Mon1/Mon2.
 /// Used for routing checkboxes AND param sends (updateFXPresetValue builds the
 /// same block for a single param change).
+#[allow(clippy::too_many_arguments)] // mirrors the official 8-arg serializer call
 pub fn send_fx_setup(
     conn: &BleConnection,
     fx_id: u8,
@@ -909,6 +908,9 @@ const METER_OUTPUT_BYTES: [u8; 5] = [0xCF, 0xCA, 0xCB, 0xCC, 0xCD];
 // app's tables — a meter level byte OR a fader position byte b means
 // F48[b] dB; F48's zero is at index ~191, so 0 dB = fix8 190/191 —
 // unrelated to the sysex CC scale where 0 dB = CC 111).
+// Values mirror the official app's table verbatim — precision must not be
+// rounded by clippy.
+#[allow(clippy::excessive_precision)]
 pub const F48: [f32; 256] = [
     -144.0, -88.11764526367188, -86.23529052734375, -84.35294342041016, -82.47058868408203, -80.5882339477539, -78.70587921142578, -76.82353210449219,
     -74.94117736816406, -73.05882263183594, -71.17646789550781, -69.29411315917969, -67.4117660522461, -65.52941131591797, -63.647056579589844, -61.764705657958984,
@@ -991,6 +993,16 @@ pub fn db_to_fix8(db: f32) -> u8 {
     255
 }
 
+/// Inverse of sysex_parser's db_to_cc send scale (linear −70…+10 dB over
+/// CC 1…127; CC 0 = off → −144 dB). Scale consts duplicated here because the
+/// test bin compiles ble.rs without sysex_parser.
+pub fn send_cc_to_db(cc: u8) -> f32 {
+    if cc == 0 {
+        return -144.0;
+    }
+    -70.0 + (cc as f32 - 1.0) / 126.0 * 80.0
+}
+
 /// ChannelMaster (0x06) TX: [id][dst][fix8(dB)] — the official app's path for
 /// every fader move (queueChannelMasterControlCommandPackets @0x79cd0: id at
 /// cmd+0x18, dst at +0x19, dB f32 at +0x1C; wire layout = table 7 via
@@ -1057,6 +1069,14 @@ pub fn db_range_to_sel4(cc: u8, min_db: f32, max_db: f32) -> u8 {
 
 /// fix8 selector 6 (Q): linear 0.1 steps from 0.3 → byte 8 = Q 1.0.
 pub const GEQ_Q_BYTE: u8 = 8;
+
+/// Channel PEQ (0x09) sends use the factory-default band frequency and Q=1.0
+/// (byte 8, same selector scale as GEQ) — the dump decode of the per-band
+/// freq/Q bytes is unfinished.
+/// shortcut: a knob gain move resets that band's freq/Q to the defaults,
+/// upgrade when the PEQ freq/Q dump decode lands.
+pub const PEQ_Q_BYTE: u8 = 8;
+pub const PEQ_BAND_FREQ: [u16; 4] = [100, 500, 2000, 12000];
 
 /// GEQ bands are fixed-frequency on the FLOW 8 (OutputChannel.GEQ_DEFAULT_FREQ
 /// in the official app); Q is fixed 1.0.
@@ -1416,5 +1436,13 @@ mod knob_tests {
         assert_eq!(bus_to_output_id(7), 0x0F);
         assert_eq!(bus_to_output_id(8), 0x0A);
         assert_eq!(bus_to_output_id(11), 0x0D);
+        // send CC scale: −70 dB at cc 1, +10 dB at cc 127, cc 0 = off/−144
+        assert!((send_cc_to_db(1) - -70.0).abs() < 0.01);
+        assert!((send_cc_to_db(127) - 10.0).abs() < 0.01);
+        assert_eq!(send_cc_to_db(0), -144.0);
+        // round-trip against the parser's db_to_cc scale midpoints
+        assert!((send_cc_to_db(64) - (-70.0 + 63.0 / 126.0 * 80.0)).abs() < 0.01);
+        assert_eq!(PEQ_Q_BYTE, 8);
+        assert_eq!(PEQ_BAND_FREQ, [100, 500, 2000, 12000]);
     }
 }

@@ -368,6 +368,7 @@ where
     knob_slot_s(label, is_synced, range, value, default, KNOB_SIZE, on_change, tip)
 }
 
+#[allow(clippy::too_many_arguments)] // one arg per knob-slot field, mirrors knob_slot
 fn knob_slot_s<'a, F>(
     label: &'a str,
     is_synced: bool,
