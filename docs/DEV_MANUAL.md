@@ -468,6 +468,14 @@ Notes:
     factory defaults — their offsets are not calibrated yet.
 * `src/service/ble.rs` holds the encoders + a `knob_tests` unit test
   pinning them to the Kotlin conversions (`floatToFix8` selectors 1–6).
+* Device settings (Settings page) use op 0x25 with payload
+  `[id][1][value]`. IDs: 0x01 BT/USB source, 0x02 phones-only,
+  0x03 footswitch, 0x07 USB streaming, 0x08 Mon 1/2 source, 0x09/0x0A
+  USB 1/2 / 3/4 → channel, 0x0B stereo link, 0x0C phones source, 0x0D
+  phones tap, 0x0E/0x0F pads, **0x11 Mon 1/2 Pre/Post (0/1)**. IDs 0x08
+  and 0x11 are write-only: the dump tail's packed bools do not carry them.
+  FX output routing is a separate op 0x11 payload `[id][p1][p2][p3][bits]`
+  (bit 0 = Main, 1 = Mon 1, 2 = Mon 2) — same hex value, different namespace.
 
 ## 8. File Structure
 ```

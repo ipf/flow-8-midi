@@ -12,7 +12,7 @@ Nav bar (top): Mixer tab, BT indicator + Connect/Disconnect button
 Settings gear, Help button. Four pages plus an error state:
 
 * **Mixer** — the main screen; every control lives here (see below).
-* **Settings** (gear) — three cards: FLOW 8 Device (12 back-panel
+* **Settings** (gear) — three cards: FLOW 8 Device (13 back-panel
   settings; the blue highlight shows the state the mixer reported at
   connect), Snapshots (15 slots in 5 columns: load / ✎ rename / Save /
   Del, plus Reset to Default), Appearance & Sync (theme, sync interval).

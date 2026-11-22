@@ -18,7 +18,7 @@ Pre-built binaries for Linux (x86_64), Windows (x86_64), and macOS (Apple Silico
 ## Features
 
 * **Mixer page**: SSL-style channel strips for all 7 inputs — Gain, 4-band EQ, Low Cut, Compressor, sends (Mon 1/2, FX 1/2), Pan, and a level fader with VU meter per channel. Bus strips with 9-band graphic EQ, limiter, and FX return controls (preset selection, parameters, routing, TAP tempo with 7-segment readout).
-* **Settings page**: all back-panel device settings (footswitch, phones, USB streaming, pads, monitor sources) with live BLE read-back highlighting, plus the 15 mixer snapshots (load, save, rename, delete) and theme/sync preferences.
+* **Settings page**: all back-panel device settings (footswitch, phones, USB streaming, pads, monitor sources and tap point) with live BLE read-back highlighting, plus the 15 mixer snapshots (load, save, rename, delete) and theme/sync preferences.
 * **BLE sync**: when connected via Bluetooth, reads the mixer's full state (all parameters, snapshot names, device settings) and reflects it in the UI. The nav bar has an explicit Connect/Disconnect button — the label follows the link state.
 * **Auto-detection**: automatically detects the FLOW 8 on startup via USB MIDI.
 * **Cross-platform**: works on Windows, Linux, and macOS.

@@ -150,17 +150,20 @@ The mixer's back-panel and routing settings. Clicking an option sends it to the 
 | Setting | Options | Description |
 |---------|---------|-------------|
 | **Footswitch** | FX mute / Recall snapshot | What the connected footswitch does |
-| **Phones only** | Main + phones / Phones only | Mutes MAIN and plays everything on the phones out |
-| **Phones mix** | Main mix / Mon 1/2 mix | What the phones output plays |
-| **Phones tap point** | Pre-fader / Post-fader | Only affects the Mon 1/2 phones mix |
-| **USB streaming** | 2-channel / 4-channel | How many channels the computer sends back (plays on Ch 5/6 and 7/8) |
+| **BT/USB playback** | Main mix / Phones | Where the BT/USB player plays (MAIN + phones, or phones only) |
+| **Headphones source** | Main / Mon 1/2 | What the headphones play |
+| **Headphones tap point** | Pre / Post | Only affects the Mon 1/2 phones mix |
+| **Recording / Streaming** | Aufnahme / Streaming | USB return mode: multichannel pre-fader vs stereo post-fader (plays on Ch 5/6 and 7/8) |
 | **Ch 5/6 · 7/8 audio** | BT audio / USB player | What the BT/USB channel plays |
-| **Mon 1/2 source** | Monitor buses / USB 1/2 / USB 3/4 | What the MONITOR 1/2 outputs carry |
-| **Mon link** | Unlinked / Linked | Links MONITOR 1 and 2 into one stereo output |
-| **Ch 5/6 source** | LINE / USB | What channel strip 5/6 gets |
-| **Ch 7/8 source** | LINE / USB | What channel strip 7/8 gets |
+| **Mon out 1/2** | Mon buses / USB 1/2 / USB 3/4 | What the MONITOR 1/2 outputs carry |
+| **Mon 1/2 source** | Pre / Post | Where the MONITOR 1/2 outputs tap (pre/post fader) |
+| **Stereo link** | Off / Linked | Links MONITOR 1 and 2 into one stereo output |
+| **USB 1/2 to channel** | LINE / USB | What channel strip 5/6 gets |
+| **USB 3/4 to channel** | LINE / USB | What channel strip 7/8 gets |
 | **Main pad** | Off / −10 dBV | Attenuates the MAIN XLR outputs |
 | **Monitor pad** | Off / −10 dBV | Attenuates the MONITOR outputs |
+
+> **Note:** Mon out 1/2 and Mon 1/2 source are write-only — the mixer does not report them in its state dump, so they never show the blue highlight.
 
 ### 5.2 Snapshots
 
